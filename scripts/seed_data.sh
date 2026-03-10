@@ -18,7 +18,7 @@ PDF_PATH="/tmp/sprag-seed/sample.pdf"
 
 # Download an official W3C dummy PDF
 if [ ! -f "$PDF_PATH" ]; then
-    curl -s https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf -o "$PDF_PATH"
+    curl -s https://bitcoin.org/bitcoin.pdf -o "$PDF_PATH"
 fi
 
 echo -e "${YELLOW}▸${NC} Uploading the file to MinIO (bucket: documents)..."
@@ -38,16 +38,12 @@ echo -e "${YELLOW}▸${NC} Publishing event to Redpanda (Kafka)..."
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Create the JSON payload. Simulating your user ("samuca").
-PAYLOAD=$(cat <<EOF
-{
-    "file_path": "sample.pdf",
-    "file_name": "sample.pdf",
-    "user_id": "samuca",
-    "permissions": ["engineering_team", "admin"],
-    "uploaded_at": "$NOW"
-}
-EOF
-)
+PAYLOAD=$(echo '{"file_path": "sample.pdf", "file_name": "sample.pdf", "user_id": "samuca", "permissions": ["engineering_team", "admin"], "uploaded_at": "'$NOW'"}' | tr -d '\n')
+
+# Envia para o Redpanda
+echo -n "$PAYLOAD" | docker exec -i sp-rag-redpanda rpk topic produce document.uploaded
+
+echo -e "${GREEN}✓${NC} Seeding completed successfully!"
 
 # Send the message to the topic directly via the Redpanda container
 echo "$PAYLOAD" | docker exec -i sp-rag-redpanda rpk topic produce document.uploaded
