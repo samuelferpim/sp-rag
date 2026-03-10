@@ -1,0 +1,177 @@
+services:
+  # =============================================================
+  # Vector Database - Qdrant
+  # Stores document embeddings with metadata payload filtering
+  # Dashboard: http://localhost:6333/dashboard
+  # =============================================================
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    container_name: sp-rag-qdrant
+    ports:
+      - "${QDRANT_REST_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================
+  # Cache - Redis 7
+  # Semantic cache (RedisVL) + general purpose caching
+  # =============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: sp-rag-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================
+  # Message Broker - Redpanda (Kafka-compatible, no Zookeeper)
+  # Lighter than Confluent Kafka, same protocol, zero JVM overhead
+  # Console: http://localhost:8080
+  # =============================================================
+  redpanda:
+    image: redpandadata/redpanda:v24.3.1
+    container_name: sp-rag-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr localhost:8082
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+      - "8082:8082"
+      - "29092:29092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  redpanda-console:
+    image: redpandadata/console:v2.8.0
+    container_name: sp-rag-redpanda-console
+    ports:
+      - "${REDPANDA_CONSOLE_PORT:-8080}:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # =============================================================
+  # Object Storage - MinIO (S3-compatible)
+  # Stores raw uploaded documents (PDFs, DOCX, etc.)
+  # Console: http://localhost:9001
+  # =============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: sp-rag-minio
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sprag}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sprag12345}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Create default bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: sp-rag-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-sprag} $${MINIO_ROOT_PASSWORD:-sprag12345};
+        mc mb local/${MINIO_BUCKET:-documents} --ignore-existing;
+        echo 'Bucket ready.';
+      "
+
+  # =============================================================
+  # Authorization - SpiceDB (Google Zanzibar)
+  # Granular RBAC/ABAC for document-level access control
+  # gRPC: localhost:50051
+  # =============================================================
+  spicedb-postgres:
+    image: postgres:16-alpine
+    container_name: sp-rag-spicedb-pg
+    environment:
+      POSTGRES_USER: spicedb
+      POSTGRES_PASSWORD: ${SPICEDB_PG_PASSWORD:-spicedb_secret}
+      POSTGRES_DB: spicedb
+    volumes:
+      - spicedb_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spicedb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  spicedb-migrate:
+    image: authzed/spicedb:v1.38.1
+    container_name: sp-rag-spicedb-migrate
+    command: migrate head
+    environment:
+      SPICEDB_DATASTORE_ENGINE: postgres
+      SPICEDB_DATASTORE_CONN_URI: postgres://spicedb:${SPICEDB_PG_PASSWORD:-spicedb_secret}@spicedb-postgres:5432/spicedb?sslmode=disable
+    depends_on:
+      spicedb-postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  spicedb:
+    image: authzed/spicedb:v1.38.1
+    container_name: sp-rag-spicedb
+    command: serve
+    ports:
+      - "${SPICEDB_GRPC_PORT:-50051}:50051"
+      - "${SPICEDB_HTTP_PORT:-8443}:8443"
+    environment:
+      SPICEDB_GRPC_PRESHARED_KEY: ${SPICEDB_PRESHARED_KEY:-sprag_dev_key}
+      SPICEDB_DATASTORE_ENGINE: postgres
+      SPICEDB_DATASTORE_CONN_URI: postgres://spicedb:${SPICEDB_PG_PASSWORD:-spicedb_secret}@spicedb-postgres:5432/spicedb?sslmode=disable
+    depends_on:
+      spicedb-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  qdrant_data:
+  redis_data:
+  redpanda_data:
+  minio_data:
+  spicedb_pg_data:
