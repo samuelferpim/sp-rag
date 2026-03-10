@@ -29,12 +29,6 @@ services:
       - qdrant_data:/qdrant/storage
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
   # =============================================================
   # Cache — Redis 7.4
@@ -210,6 +204,31 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+# =============================================================
+  # AI Worker — Python (ETL & Embeddings)
+  # =============================================================
+  worker:
+    build:
+      context: ./services/worker
+      dockerfile: Dockerfile
+    container_name: sp-rag-worker
+    networks: [sprag]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1 
+      - KAFKA_BROKERS=redpanda:29092
+      - MINIO_ENDPOINT=minio:9000
+      - QDRANT_HOST=qdrant
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
 
 volumes:
   qdrant_data:

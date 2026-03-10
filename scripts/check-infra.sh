@@ -76,6 +76,14 @@ else
   fail "SpiceDB not responding"
 fi
 
+# --- Python Worker ---
+info "Checking Python Worker (ETL & Embeddings)..."
+if [ "$(docker inspect -f '{{.State.Status}}' sp-rag-worker 2>/dev/null)" == "running" ]; then
+  pass "Python Worker container is running"
+else
+  fail "Python Worker container is not running or crashed"
+fi
+
 # --- Summary ---
 echo ""
 echo "========================================="
