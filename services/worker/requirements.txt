@@ -1,0 +1,26 @@
+# SP-RAG Python Worker — minimal dependencies
+# Versions pinned for reproducible builds. Bump intentionally.
+
+# PDF text extraction (pulls in pdfminer, lxml, and other parsers)
+unstructured[pdf]==0.17.2
+
+# Qdrant vector database client
+qdrant-client==1.14.2
+
+# OpenAI SDK (embeddings + chat)
+openai==1.68.2
+
+# Kafka consumer/producer (C-based librdkafka binding — faster than kafka-python)
+confluent-kafka>=2.13
+
+# Load .env files in local development
+python-dotenv==1.0.1
+
+# MinIO S3-compatible object storage client
+minio==7.2.15
+
+
+# HTTP stack fix
+requests>=2.32.3
+urllib3<2.5
+charset-normalizer>=3.3
