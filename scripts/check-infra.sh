@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
 # SP-RAG Infrastructure Health Check
-# Run after: docker compose up -d
+# Run after: docker compose up -d (or: make health)
 # =============================================================
 
 set -e
@@ -40,15 +40,10 @@ fi
 
 # --- Redpanda (Kafka) ---
 info "Checking Redpanda (Kafka-compatible broker)..."
-if docker exec sp-rag-redpanda rpk cluster health 2>/dev/null | grep -q "Healthy"; then
-  pass "Redpanda cluster healthy on :9092"
+if docker exec sp-rag-redpanda rpk cluster info > /dev/null 2>&1; then
+  pass "Redpanda cluster responding on :9092"
 else
-  # fallback: just check if port is open
-  if docker exec sp-rag-redpanda rpk cluster info > /dev/null 2>&1; then
-    pass "Redpanda cluster responding on :9092"
-  else
-    fail "Redpanda not responding"
-  fi
+  fail "Redpanda not responding"
 fi
 
 # --- Redpanda Console ---
@@ -75,10 +70,10 @@ fi
 
 # --- SpiceDB ---
 info "Checking SpiceDB (Authorization)..."
-if docker exec sp-rag-spicedb grpc_health_probe -addr=localhost:50051 > /dev/null 2>&1; then
-  pass "SpiceDB gRPC on :50051"
+if curl -sf http://localhost:8443/healthz > /dev/null 2>&1; then
+  pass "SpiceDB HTTP on :8443"
 else
-  fail "SpiceDB gRPC not responding"
+  fail "SpiceDB not responding"
 fi
 
 # --- Summary ---

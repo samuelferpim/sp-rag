@@ -1,12 +1,27 @@
+# =============================================================
+# SP-RAG Infrastructure — Docker Compose
+# =============================================================
+# Usage:
+#   make setup     (first time)
+#   make up        (start all)
+#   make health    (verify)
+#
+# =============================================================
+
+networks:
+  sprag:
+    driver: bridge
+
 services:
   # =============================================================
-  # Vector Database - Qdrant
-  # Stores document embeddings with metadata payload filtering
+  # Vector Database — Qdrant v1.17.0
   # Dashboard: http://localhost:6333/dashboard
   # =============================================================
   qdrant:
-    image: qdrant/qdrant:v1.13.2
+    image: qdrant/qdrant:v1.17.0
     container_name: sp-rag-qdrant
+    networks: [sprag]
+    restart: unless-stopped
     ports:
       - "${QDRANT_REST_PORT:-6333}:6333"
       - "${QDRANT_GRPC_PORT:-6334}:6334"
@@ -19,14 +34,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   # =============================================================
-  # Cache - Redis 7
+  # Cache — Redis 7.4
   # Semantic cache (RedisVL) + general purpose caching
   # =============================================================
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: sp-rag-redis
+    networks: [sprag]
+    restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -37,15 +55,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
 
   # =============================================================
-  # Message Broker - Redpanda (Kafka-compatible, no Zookeeper)
-  # Lighter than Confluent Kafka, same protocol, zero JVM overhead
+  # Message Broker — Redpanda v24.3.1 (Kafka-compatible)
+  # No JVM, no Zookeeper. Same Kafka protocol.
   # Console: http://localhost:8080
   # =============================================================
   redpanda:
     image: redpandadata/redpanda:v24.3.1
     container_name: sp-rag-redpanda
+    networks: [sprag]
+    restart: unless-stopped
     command:
       - redpanda
       - start
@@ -68,10 +89,13 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+      start_period: 15s
 
   redpanda-console:
-    image: redpandadata/console:v2.8.0
+    image: redpandadata/console:v3.5.3
     container_name: sp-rag-redpanda-console
+    networks: [sprag]
+    restart: unless-stopped
     ports:
       - "${REDPANDA_CONSOLE_PORT:-8080}:8080"
     environment:
@@ -81,13 +105,22 @@ services:
         condition: service_healthy
 
   # =============================================================
-  # Object Storage - MinIO (S3-compatible)
-  # Stores raw uploaded documents (PDFs, DOCX, etc.)
+  # Object Storage — MinIO (S3-compatible)
+  #
+  # ⚠ MinIO stopped publishing Docker images in Oct 2025 and the
+  # repo was archived in Feb 2026. This is the last stable release
+  # on Docker Hub. For a dev/study project this is perfectly fine.
+  # If you need a maintained alternative in the future, consider:
+  #   - cgr.dev/chainguard/minio
+  #   - SeaweedFS (chrislusf/seaweedfs)
+  #
   # Console: http://localhost:9001
   # =============================================================
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
     container_name: sp-rag-minio
+    networks: [sprag]
+    restart: unless-stopped
     ports:
       - "${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
@@ -98,33 +131,37 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sprag12345}
     command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
-  # Create default bucket on startup
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     container_name: sp-rag-minio-init
+    networks: [sprag]
     depends_on:
       minio:
         condition: service_healthy
+    restart: "no"
     entrypoint: >
       /bin/sh -c "
         mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-sprag} $${MINIO_ROOT_PASSWORD:-sprag12345};
-        mc mb local/${MINIO_BUCKET:-documents} --ignore-existing;
+        mc mb local/$${MINIO_BUCKET:-documents} --ignore-existing;
         echo 'Bucket ready.';
       "
 
   # =============================================================
-  # Authorization - SpiceDB (Google Zanzibar)
+  # Authorization — SpiceDB v1.49.1 (Google Zanzibar)
   # Granular RBAC/ABAC for document-level access control
-  # gRPC: localhost:50051
+  # gRPC: localhost:50051 | HTTP: localhost:8443
   # =============================================================
   spicedb-postgres:
     image: postgres:16-alpine
     container_name: sp-rag-spicedb-pg
+    networks: [sprag]
+    restart: unless-stopped
     environment:
       POSTGRES_USER: spicedb
       POSTGRES_PASSWORD: ${SPICEDB_PG_PASSWORD:-spicedb_secret}
@@ -136,10 +173,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   spicedb-migrate:
-    image: authzed/spicedb:v1.38.1
+    image: authzed/spicedb:v1.49.1
     container_name: sp-rag-spicedb-migrate
+    networks: [sprag]
     command: migrate head
     environment:
       SPICEDB_DATASTORE_ENGINE: postgres
@@ -150,9 +189,11 @@ services:
     restart: on-failure
 
   spicedb:
-    image: authzed/spicedb:v1.38.1
+    image: authzed/spicedb:v1.49.1
     container_name: sp-rag-spicedb
-    command: serve
+    networks: [sprag]
+    restart: unless-stopped
+    command: serve --http-enabled
     ports:
       - "${SPICEDB_GRPC_PORT:-50051}:50051"
       - "${SPICEDB_HTTP_PORT:-8443}:8443"
@@ -164,10 +205,11 @@ services:
       spicedb-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8443/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
 volumes:
   qdrant_data:
