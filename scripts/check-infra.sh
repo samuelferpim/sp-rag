@@ -103,7 +103,7 @@ if [ $ERRORS -eq 0 ]; then
   echo -e "  ${GREEN}All services are healthy!${NC}"
 else
   echo -e "  ${RED}${ERRORS} service(s) failed.${NC}"
-  echo "  Run 'docker compose logs <service>' to debug."
+  echo "  Run 'make logs-<service>' to debug."
 fi
 echo "========================================="
 echo ""
