@@ -67,28 +67,28 @@ func (rc *RedisCache) GetSemantic(ctx context.Context, queryVector []float32, pe
 	// RediSearch COSINE distance: 0 = identical, 2 = opposite
 	query := fmt.Sprintf("(@perm:{%s})=>[KNN 1 @vec $vec AS dist]", permHash)
 
-	res, err := rc.client.FTSearchWithArgs(ctx, semanticIndexName, query, &redis.FTSearchOptions{
-		Params: map[string]interface{}{
-			"vec": string(vecBytes),
-		},
-		DialectVersion: 2,
-	}).Result()
+	// Use raw FT.SEARCH to avoid go-redis RESP3 parsing issues with FTSearchWithArgs
+	rawResult, err := rc.client.Do(ctx,
+		"FT.SEARCH", semanticIndexName, query,
+		"PARAMS", "2", "vec", string(vecBytes),
+		"SORTBY", "dist",
+		"RETURN", "2", "dist", "data",
+		"LIMIT", "0", "1",
+		"DIALECT", "2",
+	).Result()
 	if err != nil {
 		return nil, 0, fmt.Errorf("semantic cache search: %w", err)
 	}
 
-	if res.Total == 0 {
+	// Parse the raw response.
+	// RESP3 returns a map: {"total_results": N, "results": [{...}, ...]}
+	// RESP2 returns an array: [total, docId, [field, val, ...], ...]
+	distVal, dataVal, found := parseRawSearchResult(rawResult)
+	if !found {
 		return nil, 0, nil
 	}
 
-	doc := res.Docs[0]
-
-	// Parse distance → similarity (cosine distance is 0-2, similarity = 1 - distance)
-	distStr, ok := doc.Fields["dist"]
-	if !ok {
-		return nil, 0, nil
-	}
-	dist, err := strconv.ParseFloat(distStr, 64)
+	dist, err := strconv.ParseFloat(distVal, 64)
 	if err != nil {
 		return nil, 0, fmt.Errorf("parse semantic distance: %w", err)
 	}
@@ -98,12 +98,73 @@ func (rc *RedisCache) GetSemantic(ctx context.Context, queryVector []float32, pe
 		return nil, similarity, nil
 	}
 
-	data, ok := doc.Fields["data"]
-	if !ok {
-		return nil, similarity, nil
+	return []byte(dataVal), similarity, nil
+}
+
+// parseRawSearchResult handles both RESP2 and RESP3 formats from FT.SEARCH.
+func parseRawSearchResult(raw interface{}) (dist string, data string, found bool) {
+	// RESP3 format: map with "total_results" and "results" keys
+	if m, ok := raw.(map[interface{}]interface{}); ok {
+		total, _ := toInt64(m["total_results"])
+		if total == 0 {
+			return "", "", false
+		}
+		results, ok := m["results"].([]interface{})
+		if !ok || len(results) == 0 {
+			return "", "", false
+		}
+		// Each result is a map with "id" and "extra_attributes"
+		firstResult, ok := results[0].(map[interface{}]interface{})
+		if !ok {
+			return "", "", false
+		}
+		attrs, ok := firstResult["extra_attributes"].(map[interface{}]interface{})
+		if !ok {
+			return "", "", false
+		}
+		distVal := fmt.Sprint(attrs["dist"])
+		dataVal := fmt.Sprint(attrs["data"])
+		return distVal, dataVal, true
 	}
 
-	return []byte(data), similarity, nil
+	// RESP2 format: [total, docId, [field, value, ...], ...]
+	if arr, ok := raw.([]interface{}); ok {
+		if len(arr) < 3 {
+			return "", "", false
+		}
+		total, _ := toInt64(arr[0])
+		if total == 0 {
+			return "", "", false
+		}
+		// arr[1] = docId, arr[2] = [field, value, field, value, ...]
+		fields, ok := arr[2].([]interface{})
+		if !ok {
+			return "", "", false
+		}
+		fieldMap := make(map[string]string)
+		for i := 0; i+1 < len(fields); i += 2 {
+			fieldMap[fmt.Sprint(fields[i])] = fmt.Sprint(fields[i+1])
+		}
+		return fieldMap["dist"], fieldMap["data"], fieldMap["dist"] != ""
+	}
+
+	return "", "", false
+}
+
+// toInt64 converts various numeric types to int64.
+func toInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case string:
+		i, err := strconv.ParseInt(n, 10, 64)
+		return i, err == nil
+	}
+	return 0, false
 }
 
 // SetSemantic stores a response in the semantic cache with its query vector and permission hash.
@@ -114,7 +175,7 @@ func (rc *RedisCache) SetSemantic(ctx context.Context, queryVector []float32, pe
 
 	pipe := rc.client.Pipeline()
 
-	pipe.HSet(ctx, key, map[string]interface{}{
+	pipe.HSet(ctx, key, map[string]any{
 		"vec":  string(vecBytes),
 		"perm": permHash,
 		"data": string(data),

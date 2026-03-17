@@ -200,7 +200,7 @@ services:
       spicedb-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8443/healthz || exit 1"]
+      test: ["CMD", "spicedb", "version"]
       interval: 10s
       timeout: 5s
       retries: 5

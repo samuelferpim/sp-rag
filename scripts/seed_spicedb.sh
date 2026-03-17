@@ -122,7 +122,7 @@ check_perm() {
   body=$(jq -n \
     --arg ri "$resource_id" \
     --arg ui "$user_id" \
-    '{resource: {objectType: "document", objectId: $ri}, permission: "view", subject: {object: {objectType: "user", objectId: $ui}}}')
+    '{consistency: {fullyConsistent: true}, resource: {objectType: "document", objectId: $ri}, permission: "view", subject: {object: {objectType: "user", objectId: $ui}}}')
 
   local result
   result=$(api "/v1/permissions/check" "$body")

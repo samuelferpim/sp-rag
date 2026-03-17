@@ -1,212 +1,383 @@
-# 🛡️ Secure Polyglot RAG (SP-RAG)
+# SP-RAG (Secure Polyglot RAG)
 
-![Golang](https://img.shields.io/badge/Golang-1.21+-00ADD8?style=for-the-badge&logo=go)
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python)
-![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?style=for-the-badge&logo=apache-kafka)
+![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go)
+![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python)
+![Kafka](https://img.shields.io/badge/Redpanda_(Kafka)-231F20?style=for-the-badge&logo=apache-kafka)
 ![Qdrant](https://img.shields.io/badge/Qdrant-Vector_DB-FF5252?style=for-the-badge)
 ![SpiceDB](https://img.shields.io/badge/SpiceDB-Zero_Trust-4285F4?style=for-the-badge)
 
-An experimental, high-performance **Retrieval-Augmented Generation (RAG)** architecture designed for enterprise environments.
+An enterprise-grade **Retrieval-Augmented Generation** system with document-level access control, semantic caching, and a polyglot architecture (Go + Python).
 
-SP-RAG solves three critical bottlenecks in modern Generative AI applications: **LLM latency, API costs, and data access governance**. By decoupling the heavy NLP ingestion pipeline (Python) from the high-concurrency API gateway and orchestration layer (Golang) via event-driven messaging, this system delivers secure, millisecond-level semantic searches.
+SP-RAG tackles three critical problems in production AI systems: **LLM latency** (semantic cache cuts repeat queries from ~6s to ~400ms), **API costs** (cached responses skip OpenAI entirely), and **data governance** (SpiceDB ensures the LLM only sees what the user is allowed to see).
 
-### ✨ Key Features
-* **Polyglot Microservices:** Python workers for data extraction (`unstructured.io`) and Golang API for blazingly fast request handling.
-* **Zero-Trust AI (RBAC/ABAC):** Granular document-level access control using **SpiceDB** (Google Zanzibar model). The LLM only sees what the user is explicitly allowed to see.
-* **Semantic Caching:** Drastically reduces OpenAI API costs and response times by caching similar queries in **Redis (RedisVL)**.
-* **Event-Driven Ingestion:** Asynchronous document processing pipeline powered by **Apache Kafka**.
+This project is also the foundation for a master's thesis comparing monolithic vs polyglot RAG architectures under load.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Client (HTTP)                            │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                   Go API Gateway (Fiber)                          │
-│                                                                   │
-│  ┌─────────┐  ┌──────────────┐  ┌───────────┐  ┌─────────────┐  │
-│  │ AuthZ   │  │ Semantic     │  │ Vector    │  │ LLM         │  │
-│  │ SpiceDB │  │ Cache Redis  │  │ Search    │  │ Orchestrator│  │
-│  └────┬────┘  └──────┬───────┘  └─────┬─────┘  └──────┬──────┘  │
-│       │              │                │               │          │
-└───────┼──────────────┼────────────────┼───────────────┼──────────┘
-        │              │                │               │
-        ▼              ▼                ▼               ▼
-   ┌─────────┐   ┌─────────┐     ┌──────────┐    ┌──────────┐
-   │ SpiceDB │   │  Redis  │     │  Qdrant  │    │ OpenAI   │
-   └─────────┘   └─────────┘     └──────────┘    │ API      │
-                                       ▲          └──────────┘
-                                       │
-┌──────────────────────────────────────┼───────────────────────────┐
-│              Python Worker           │                            │
-│                                      │                            │
-│  Kafka Consumer → ETL → Embeddings ──┘                            │
-│  (unstructured)   (chunking)  (OpenAI)                            │
-└──────────────────────────────────────────────────────────────────┘
-        ▲                                        ▲
+                          ┌──────────────┐
+                          │   Browser    │
+                          │   Demo UI    │
+                          └──────┬───────┘
+                                 │
+                                 v
+┌────────────────────────────────────────────────────────────┐
+│                  Go API Gateway (Fiber)                     │
+│                                                            │
+│  Phase 1 (parallel)          Phase 2        Phase 3        │
+│  ┌──────────┐ ┌────────┐   ┌───────┐   ┌──────┐ ┌─────┐  │
+│  │ Embed    │ │ AuthZ  │   │ Cache │   │Qdrant│ │ LLM │  │
+│  │ (OpenAI) │ │(SpiceDB│   │(Redis)│   │Search│ │(GPT)│  │
+│  └────┬─────┘ └───┬────┘   └───┬───┘   └──┬───┘ └──┬──┘  │
+│       │           │            │           │        │      │
+└───────┼───────────┼────────────┼───────────┼────────┼──────┘
+        v           v            v           v        v
+   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐ ┌──────┐
+   │ OpenAI │  │SpiceDB │  │ Redis  │  │ Qdrant │ │OpenAI│
+   │Embed   │  │        │  │ Stack  │  │        │ │Chat  │
+   └────────┘  └────────┘  └────────┘  └────────┘ └──────┘
+                                            ^
+┌───────────────────────────────────────────┼────────────────┐
+│              Python Worker                │                │
+│                                           │                │
+│  Kafka Consumer -> ETL -> Embed -> Upsert─┘                │
+│  (unstructured)  (chunk)  (OpenAI)                         │
+└────────────────────────────────────────────────────────────┘
+        ^                                        ^
         │          ┌──────────────┐              │
         └──────────│  Redpanda    │──────────────┘
                    │  (Kafka)     │
                    └──────────────┘
-                          ▲
-                          │
+                          ^
                    ┌──────────────┐
                    │    MinIO     │
-                   │  (S3 Storage)│
+                   │  (S3)       │
                    └──────────────┘
 ```
 
----
-
-## 📦 Tech Stack
-
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| API Gateway | **Go** (Fiber) | High-concurrency orchestration, routing, caching |
-| AI Worker | **Python** | Document ETL, embeddings, NLP processing |
-| Message Broker | **Redpanda** | Kafka-compatible event streaming (no JVM/Zookeeper) |
-| Vector Database | **Qdrant** | Semantic search with metadata payload filtering |
-| Authorization | **SpiceDB** | Google Zanzibar-based RBAC/ABAC |
-| Semantic Cache | **Redis** | Sub-millisecond query caching with vector similarity |
-| Object Storage | **MinIO** | S3-compatible document storage |
-| LLM | **OpenAI** (GPT-4o) | Response generation |
+**Query pipeline:**
+1. **Phase 1 (parallel):** Embed query via OpenAI + resolve user teams via SpiceDB (goroutines + errgroup)
+2. **Phase 2:** Check semantic cache (Redis) -> if hit, return immediately (~400ms)
+3. **Phase 3:** Qdrant vector search (with permission filter) -> SpiceDB post-filter -> LLM -> cache result -> return (~6s)
 
 ---
 
-## 🚀 Quickstart
+## Tech Stack
+
+| Layer | Technology | Why |
+|-------|-----------|-----|
+| API Gateway | **Go** (Fiber) | Low-latency orchestration, goroutines for parallelism |
+| AI Worker | **Python** | `unstructured.io` for PDF extraction, OpenAI SDK |
+| Message Broker | **Redpanda** | Kafka-compatible, no JVM/Zookeeper, ~512MB RAM |
+| Vector DB | **Qdrant** | Payload filtering for permissions, excellent Go SDK |
+| Auth | **SpiceDB** | Google Zanzibar model, gRPC-native, fail-closed |
+| Cache | **Redis Stack** | RediSearch for vector similarity + exact hash cache |
+| Storage | **MinIO** | S3-compatible, works same in dev and prod |
+| LLM | **OpenAI** | GPT-4o-mini (chat), text-embedding-3-small (embeddings) |
+
+---
+
+## Quickstart
 
 ### Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) & Docker Compose
-- [Go 1.21+](https://go.dev/dl/)
-- [Python 3.11+](https://www.python.org/downloads/)
-- An [OpenAI API key](https://platform.openai.com/api-keys)
+- **Docker** (with Docker Compose) or **Colima**
+- **Go 1.25+**
+- **Python 3.12+**
+- An **OpenAI API key**
 
-### Setup
+### 1. Setup
 
 ```bash
-# Clone the repo
 git clone https://github.com/samuelferpim/sp-rag.git
 cd sp-rag
 
-# One-command setup: creates .env, starts infra, creates Kafka topics, runs health check
-make setup
+# Create .env from template
+cp .env.example .env
+# Edit .env and add your OpenAI API key
 ```
 
-That's it. All services will be running locally:
+> **Important:** If you have a local Redis running on port 6379, keep `REDIS_PORT=6380` in `.env` to avoid conflicts (the Redis Stack container needs the RediSearch module).
+
+### 2. Start Infrastructure
+
+```bash
+make up          # Start all containers (Qdrant, Redis, Redpanda, MinIO, SpiceDB)
+make topics      # Create Kafka topics
+make spicedb-seed  # Apply permission schema + seed test users
+```
+
+### 3. Run the Services
+
+Open **two terminals:**
+
+```bash
+# Terminal 1 — Go API Gateway
+make gateway
+```
+
+```bash
+# Terminal 2 — Python Worker
+make worker
+```
+
+### 4. Verify Everything
+
+```bash
+# Health check
+curl http://localhost:8081/api/v1/health
+# {"service":"sp-rag-gateway","status":"ok"}
+```
+
+Open the **Demo UI** at http://localhost:8081
+
+---
+
+## Usage Guide
+
+### Ingest a Document
+
+```bash
+# Seed a test PDF (Bitcoin whitepaper) into MinIO + publish Kafka event
+make seed
+```
+
+The Python worker will automatically:
+1. Download the PDF from MinIO
+2. Extract text with `unstructured.io`
+3. Chunk into ~512-token overlapping windows
+4. Generate embeddings via OpenAI
+5. Store vectors + metadata in Qdrant
+
+Watch it happen: `make logs-worker`
+
+### Query with Access Control
+
+The seed script creates these SpiceDB relationships:
+
+| User | Teams | Can view |
+|------|-------|----------|
+| `alice` | finance_team, hr_team | relatorio_financeiro, hr_policy |
+| `bob` | eng_team | engineering_roadmap |
+| `charlie` | finance_team, eng_team | relatorio_financeiro, engineering_roadmap |
+| `samuca` | engineering_team, admin | sample_pdf (seeded doc) |
+
+```bash
+# Authorized query (samuca has engineering_team permission)
+curl -s -X POST http://localhost:8081/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is Bitcoin?", "user_id": "samuca"}' | jq .
+
+# Unauthorized query (alice does NOT have engineering_team)
+curl -s -X POST http://localhost:8081/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is Bitcoin?", "user_id": "alice"}' | jq .
+# Returns: "No relevant documents found for your query."
+```
+
+### Semantic Cache in Action
+
+Run the same query twice:
+
+```bash
+# First call: ~6s (embeds query + Qdrant search + LLM generation)
+curl -s -X POST http://localhost:8081/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Explain the Bitcoin whitepaper", "user_id": "samuca"}' | jq '.timing'
+
+# Second call: ~400ms (semantic cache hit, skips Qdrant + LLM)
+curl -s -X POST http://localhost:8081/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What does the Bitcoin paper say?", "user_id": "samuca"}' | jq '.cached, .timing'
+# cached: true — even though the wording is different!
+```
+
+### Upload Your Own Document
+
+```bash
+curl -X POST http://localhost:8081/api/v1/documents/upload \
+  -F "file=@/path/to/your/document.pdf" \
+  -F "user_id=samuca" \
+  -F "permissions=engineering_team,admin"
+# Returns 202 Accepted — worker processes asynchronously
+```
+
+### Demo UI
+
+Open http://localhost:8081 for an interactive web interface where you can:
+- Upload documents
+- Run queries as different users
+- See response timing and sources
+- Monitor service health status
+
+---
+
+## API Reference
+
+### `GET /api/v1/health`
+Returns gateway status.
+
+### `POST /api/v1/documents/upload`
+Upload a PDF for ingestion.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | multipart file | yes | PDF file |
+| `user_id` | string | yes | Uploader user ID |
+| `permissions` | string | yes | Comma-separated team names |
+
+**Response:** `202 Accepted`
+
+### `POST /api/v1/query`
+Query the RAG pipeline.
+
+```json
+{
+  "query": "What is Bitcoin?",
+  "user_id": "samuca"
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "Bitcoin is a peer-to-peer electronic cash system...",
+  "sources": [
+    {"file_name": "sample.pdf", "page": 1, "score": 0.42, "snippet": "..."}
+  ],
+  "model": "gpt-4o-mini",
+  "cached": false,
+  "timing": {
+    "embed_ms": 528,
+    "authz_ms": 68,
+    "cache_ms": 4,
+    "qdrant_ms": 6,
+    "llm_ms": 5253,
+    "total_ms": 5799
+  }
+}
+```
+
+---
+
+## Service URLs
 
 | Service | URL |
 |---------|-----|
+| **Demo UI** | http://localhost:8081 |
+| **API** | http://localhost:8081/api/v1 |
 | Qdrant Dashboard | http://localhost:6333/dashboard |
 | Redpanda Console | http://localhost:8080 |
-| MinIO Console | http://localhost:9001 |
-| SpiceDB gRPC | localhost:50051 |
-| Redis | localhost:6379 |
+| MinIO Console | http://localhost:9001 (user: `sprag` / pass: `sprag12345`) |
+| SpiceDB HTTP | http://localhost:8443 |
 
 ---
 
-## 🛠️ Makefile Commands
-
-Run `make help` to see all available commands:
+## Makefile Commands
 
 ```
-Infrastructure
-  make setup             First-time setup (env + infra + topics + health check)
-  make up                Start all services
-  make down              Stop all services
-  make restart           Restart all services
-  make status            Show container status
-  make health            Run infrastructure health check
-  make clean             Stop services and delete all data (⚠️ destructive)
+make setup           # First-time: .env + infra + topics + health check
+make up              # Start all infrastructure
+make down            # Stop all infrastructure
+make restart         # Restart all
+make health          # Run health check script
+make status          # Show container status
+make logs            # Tail all logs
+make logs-<svc>      # Tail specific service (e.g. make logs-qdrant)
+make clean           # Stop + delete all volumes (destructive)
 
-Kafka
-  make topics            Create project Kafka topics
-  make topics-list       List all topics
+make topics          # Create Kafka topics
+make topics-list     # List Kafka topics
 
-Application
-  make gateway           Run Go API gateway locally
-  make worker            Run Python worker locally
-  make worker-deps       Install Python dependencies
+make gateway         # Run Go API locally
+make worker          # Run Python worker locally
+make worker-deps     # Install Python deps
 
-Development
-  make fmt               Format Go + Python code
-  make lint              Lint Go + Python code
-  make test              Run all tests
-  make logs              Tail all service logs
-  make logs-<service>    Tail logs for a specific service (e.g. make logs-qdrant)
+make spicedb-schema  # Write permission schema
+make spicedb-seed    # Seed test users + teams + documents
+make seed            # Upload sample PDF + publish Kafka event
 
-Data & Benchmarks
-  make seed              Upload sample PDFs for testing
-  make bench             Run K6 load tests
+make fmt             # Format Go + Python
+make lint            # Lint Go + Python
+make test            # Run all tests (Go + Python)
+make test-go         # Run Go tests only
+make test-python     # Run Python tests only
+make test-e2e        # Run E2E tests (requires services running)
 ```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 sp-rag/
-├── docker-compose.yml          # All infrastructure services
-├── Makefile                    # Project commands
-├── .env.example                # Environment variables template
-│
+├── docker-compose.yml
+├── Makefile
+├── .env.example
 ├── services/
-│   ├── gateway/                # 🟦 Go API (Fiber)
-│   │   ├── cmd/
-│   │   │   └── main.go
-│   │   ├── internal/
-│   │   │   ├── handler/        # HTTP route handlers
-│   │   │   ├── middleware/     # Auth, logging, CORS
-│   │   │   ├── rag/            # Prompt building, LLM calls
-│   │   │   ├── cache/          # Redis semantic cache
-│   │   │   └── authz/          # SpiceDB integration
-│   │   ├── go.mod
-│   │   └── Dockerfile
-│   │
-│   └── worker/                 # 🟨 Python Worker
+│   ├── gateway/                # Go API Gateway
+│   │   ├── cmd/main.go
+│   │   ├── Dockerfile
+│   │   ├── web/index.html      # Demo UI (SPA)
+│   │   └── internal/
+│   │       ├── handler/        # HTTP handlers + static routes
+│   │       ├── middleware/     # CORS, request logging
+│   │       ├── orchestrator/  # Query pipeline (parallel phases)
+│   │       ├── rag/            # Prompt building, LLM calls
+│   │       ├── cache/          # Redis exact + semantic cache
+│   │       ├── authz/          # SpiceDB integration
+│   │       └── config/         # Environment config loader
+│   └── worker/                 # Python Worker
 │       ├── app/
+│       │   ├── __main__.py     # Entry point
 │       │   ├── consumer.py     # Kafka consumer loop
-│       │   ├── etl.py          # PDF/DOCX text extraction
-│       │   └── embedder.py     # OpenAI embeddings + Qdrant
-│       ├── requirements.txt
-│       └── Dockerfile
-│
-├── infra/
-│   └── spicedb/
-│       └── schema.zed          # Permission model (Zanzibar)
-│
+│       │   ├── etl.py          # PDF extraction + chunking
+│       │   ├── embedder.py     # OpenAI embeddings -> Qdrant
+│       │   └── config.py       # Configuration
+│       ├── tests/              # pytest suite
+│       ├── Dockerfile
+│       └── requirements.txt
+├── infra/spicedb/schema.zed    # Permission model (Zanzibar)
 ├── scripts/
-│   ├── check-infra.sh          # Health check for all services
-│   └── seed_data.sh            # Populate test data
-│
-├── benchmarks/
-│   └── k6/                     # Load testing scripts
-│
-└── docs/
-    └── architecture.md         # Detailed design decisions
+│   ├── check-infra.sh          # Health check
+│   ├── seed_data.sh            # Upload test PDF
+│   ├── seed_spicedb.sh         # Seed SpiceDB permissions
+│   └── e2e_test.sh             # End-to-end tests
+├── docs/adr/                   # Architecture Decision Records
+└── benchmarks/k6/              # Load test scripts
 ```
 
 ---
 
-## 🗺️ Roadmap
+## Roadmap
 
 - [x] **Phase 0** — Infrastructure (Docker Compose, Makefile)
-- [ ] **Phase 1** — Python Worker (PDF ETL → Embeddings → Qdrant)
-- [ ] **Phase 2** — Go API Gateway (Upload + Vector Search + LLM)
-- [ ] **Phase 3** — Semantic Cache (Redis)
-- [ ] **Phase 4** — Access Control (SpiceDB)
-- [ ] **Phase 5** — Parallel Orchestration (Goroutines + errgroup)
-- [ ] **Phase 6** — Observability (Prometheus, Grafana, Jaeger)
-- [ ] **Phase 7** — Benchmarks (K6 load tests, comparative analysis)
-- [ ] **Phase 8** — Research Paper
+- [x] **Phase 1** — Python Worker (PDF ETL, embeddings, Kafka consumer)
+- [x] **Phase 2** — Go API Gateway (upload, vector search, LLM)
+- [x] **Phase 3** — Semantic Cache (exact hash + vector similarity via Redis Stack)
+- [x] **Phase 4** — Access Control (SpiceDB schema, Go integration, Qdrant filters)
+- [x] **Phase 5** — Parallel Orchestration (goroutines + errgroup)
+- [x] **Phase 6** — Testing, ADRs, Demo UI
+- [ ] **Phase 7** — Observability (Prometheus, Grafana, Jaeger, OpenTelemetry)
+- [ ] **Phase 8** — Benchmarks (K6: monolithic Python vs polyglot Go+Python)
+- [ ] **Phase 9** — Research Paper
 
 ---
 
-## 📄 License
+## Architecture Decisions
+
+See [`docs/adr/`](docs/adr/) for detailed ADRs. Key decisions:
+
+- **Redpanda over Kafka** — No JVM, no Zookeeper, ~512MB RAM vs ~2GB
+- **Qdrant over Pinecone/Milvus** — Payload filtering for permissions, self-hosted
+- **SpiceDB over custom RBAC** — Google Zanzibar model, gRPC-native
+- **Fiber over Gin** — Faster benchmarks, Express-like API
+- **MinIO over local FS** — S3-compatible, same code in dev and prod
+
+---
+
+## License
 
 MIT

@@ -1,6 +1,6 @@
 """Tests for the embedder module (OpenAI embeddings → Qdrant)."""
 
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -41,7 +41,9 @@ class TestEmbedChunks:
         ]
         mock_client.embeddings.create.return_value = mock_response
 
-        vectors = embed_chunks(sample_chunks, mock_config, mock_client)
+        vectors = embed_chunks(
+            sample_chunks, mock_client, mock_config.openai_embedding_model, mock_config.openai_batch_size
+        )
 
         assert len(vectors) == 3
         assert len(vectors[0]) == 1536
@@ -56,7 +58,9 @@ class TestEmbedChunks:
         ]
         mock_client.embeddings.create.return_value = mock_response
 
-        vectors = embed_chunks(sample_chunks, mock_config, mock_client)
+        vectors = embed_chunks(
+            sample_chunks, mock_client, mock_config.openai_embedding_model, mock_config.openai_batch_size
+        )
 
         assert vectors[0][0] == 0.0
         assert vectors[1][0] == 1.0
@@ -67,7 +71,9 @@ class TestEmbedChunks:
         mock_client.embeddings.create.side_effect = Exception("API rate limit")
 
         with pytest.raises(Exception, match="rate limit"):
-            embed_chunks(sample_chunks, mock_config, mock_client)
+            embed_chunks(
+                sample_chunks, mock_client, mock_config.openai_embedding_model, mock_config.openai_batch_size
+            )
 
     def test_batching_large_input(self, mock_config):
         mock_config.openai_batch_size = 2
@@ -87,7 +93,9 @@ class TestEmbedChunks:
             mock_response, mock_response2, mock_response3
         ]
 
-        vectors = embed_chunks(chunks, mock_config, mock_client)
+        vectors = embed_chunks(
+            chunks, mock_client, mock_config.openai_embedding_model, mock_config.openai_batch_size
+        )
         assert len(vectors) == 5
         assert mock_client.embeddings.create.call_count == 3
 
@@ -121,7 +129,9 @@ class TestUpsertVectors:
         mock_qdrant = MagicMock()
         vectors = [[0.1] * 1536 for _ in sample_chunks]
 
-        upsert_vectors(sample_chunks, vectors, sample_metadata, mock_config, mock_qdrant)
+        upsert_vectors(
+            mock_qdrant, mock_config.qdrant_collection, sample_chunks, vectors, sample_metadata
+        )
 
         mock_qdrant.upsert.assert_called_once()
         call_args = mock_qdrant.upsert.call_args
@@ -133,7 +143,9 @@ class TestUpsertVectors:
         mock_qdrant = MagicMock()
         vectors = [[0.1] * 1536 for _ in sample_chunks]
 
-        upsert_vectors(sample_chunks, vectors, sample_metadata, mock_config, mock_qdrant)
+        upsert_vectors(
+            mock_qdrant, mock_config.qdrant_collection, sample_chunks, vectors, sample_metadata
+        )
 
         points = mock_qdrant.upsert.call_args.kwargs["points"]
         payload = points[0].payload

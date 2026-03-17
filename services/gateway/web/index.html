@@ -422,6 +422,7 @@
         <div class="form-row">
             <label for="uploadUser">Upload as user</label>
             <select id="uploadUser" aria-label="Select user for upload">
+                <option value="samuca">Samuca (Engineering + Admin)</option>
                 <option value="alice">Alice (Finance + HR)</option>
                 <option value="bob">Bob (Engineering)</option>
                 <option value="charlie">Charlie (Engineering + Finance)</option>
@@ -440,6 +441,7 @@
         <div class="form-row">
             <label for="queryUser">Query as user</label>
             <select id="queryUser" aria-label="Select user for query">
+                <option value="samuca">Samuca (Engineering + Admin)</option>
                 <option value="alice">Alice (Finance + HR)</option>
                 <option value="bob">Bob (Engineering)</option>
                 <option value="charlie">Charlie (Engineering + Finance)</option>
@@ -726,7 +728,7 @@
 
         const services = {
             Gateway: { dot: document.getElementById('statusGateway'), check: () => fetch(API + '/health').then(r => r.ok) },
-            Redpanda: { dot: document.getElementById('statusRedpanda'), check: () => fetch('http://localhost:8081/v1/node/health').then(r => r.ok).catch(() => false) },
+            Redpanda: { dot: document.getElementById('statusRedpanda'), check: () => Promise.resolve(null) },
             Qdrant: { dot: document.getElementById('statusQdrant'), check: () => fetch('http://localhost:6333/healthz').then(r => r.ok).catch(() => false) },
             Redis: { dot: document.getElementById('statusRedis'), check: () => Promise.resolve(null) },
             MinIO: { dot: document.getElementById('statusMinio'), check: () => fetch('http://localhost:9000/minio/health/live').then(r => r.ok).catch(() => false) },

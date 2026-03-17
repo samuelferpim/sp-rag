@@ -22,16 +22,10 @@ if [ ! -f "$PDF_PATH" ]; then
 fi
 
 echo -e "${YELLOW}▸${NC} Uploading the file to MinIO (bucket: documents)..."
-# Discover the Docker Compose internal network name
-NETWORK=$(docker inspect sp-rag-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' | head -n 1)
-
-# Use the official MinIO Client (mc) image to upload via internal network
-# We use --entrypoint sh because the image defaults to the 'mc' binary
-docker run --rm -v "$PDF_PATH":/tmp/sample.pdf \
-    --network "$NETWORK" \
-    --entrypoint sh \
-    minio/mc:RELEASE.2025-04-16T18-13-26Z \
-    -c "mc alias set local http://sp-rag-minio:9000 sprag sprag12345 > /dev/null && mc cp /tmp/sample.pdf local/documents/sample.pdf > /dev/null"
+# Copy file into MinIO container and use mc inside it (avoids Colima bind mount issues)
+docker cp "$PDF_PATH" sp-rag-minio:/tmp/sample.pdf
+docker exec sp-rag-minio mc alias set local http://localhost:9000 sprag sprag12345 > /dev/null 2>&1
+docker exec sp-rag-minio mc cp /tmp/sample.pdf local/documents/sample.pdf > /dev/null 2>&1
 
 echo -e "${YELLOW}▸${NC} Publishing event to Redpanda (Kafka)..."
 # Generate current timestamp (ISO-8601)
@@ -40,12 +34,7 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Create the JSON payload. Simulating your user ("samuca").
 PAYLOAD=$(echo '{"file_path": "sample.pdf", "file_name": "sample.pdf", "user_id": "samuca", "permissions": ["engineering_team", "admin"], "uploaded_at": "'$NOW'"}' | tr -d '\n')
 
-# Envia para o Redpanda
-echo -n "$PAYLOAD" | docker exec -i sp-rag-redpanda rpk topic produce document.uploaded
-
-echo -e "${GREEN}✓${NC} Seeding completed successfully!"
-
-# Send the message to the topic directly via the Redpanda container
+# Publish to Redpanda
 echo "$PAYLOAD" | docker exec -i sp-rag-redpanda rpk topic produce document.uploaded
 
 echo -e "${GREEN}✓${NC} Seeding completed successfully!"

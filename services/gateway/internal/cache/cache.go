@@ -34,9 +34,10 @@ type RedisCache struct {
 // NewRedisCache creates a RedisCache connected to the given Redis instance.
 func NewRedisCache(addr, password string, db int, ttl time.Duration, threshold float64, dims int) (*RedisCache, error) {
 	client := redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: password,
-		DB:       db,
+		Addr:         addr,
+		Password:     password,
+		DB:           db,
+		UnstableResp3: true,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

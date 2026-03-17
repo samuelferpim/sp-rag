@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:3000}"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8081}"
 API="$GATEWAY_URL/api/v1"
 
 PASSED=0

@@ -9,7 +9,7 @@ Responsibilities:
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from openai import OpenAI

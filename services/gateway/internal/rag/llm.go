@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"fmt"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -17,5 +18,8 @@ func CallLLM(ctx context.Context, client *openai.Client, model string, messages 
 		return "", err
 	}
 
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("LLM returned no choices")
+	}
 	return resp.Choices[0].Message.Content, nil
 }

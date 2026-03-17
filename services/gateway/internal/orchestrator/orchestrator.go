@@ -100,6 +100,9 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 			slog.Error("failed to embed query", "error", err)
 			return &QueryError{502, "failed to process query", err}
 		}
+		if len(embResp.Data) == 0 {
+			return &QueryError{502, "empty embedding response", nil}
+		}
 		queryVector = embResp.Data[0].Embedding
 		return nil
 	})
@@ -125,7 +128,11 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 	cacheStart := time.Now()
 
 	// Semantic cache
-	if data, similarity, err := o.Cache.GetSemantic(ctx, queryVector, userTeams); err == nil && data != nil {
+	if data, similarity, err := o.Cache.GetSemantic(ctx, queryVector, userTeams); err != nil {
+		slog.Warn("semantic cache lookup error", "error", err)
+	} else if data == nil {
+		slog.Debug("semantic cache below threshold", "similarity", similarity, "user_id", userID, "threshold", o.Config.RedisSimilarityThreshold)
+	} else {
 		var result QueryResult
 		if err := json.Unmarshal(data, &result); err == nil {
 			result.Cached = true

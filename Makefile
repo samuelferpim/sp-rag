@@ -16,6 +16,7 @@
 
 # --- Colors ---
 GREEN  := \033[0;32m
+RED    := \033[0;31m
 YELLOW := \033[1;33m
 CYAN   := \033[0;36m
 NC     := \033[0m
@@ -104,10 +105,13 @@ topics-list: ## List all Kafka topics
 
 spicedb-schema: ## Write the permission schema to SpiceDB
 	@echo "$(YELLOW)▸$(NC) Writing SpiceDB schema..."
-	@docker exec sp-rag-spicedb zed schema write --insecure \
-		--endpoint localhost:50051 \
-		--token "$$(grep SPICEDB_PRESHARED_KEY .env | cut -d= -f2)" \
-		< infra/spicedb/schema.zed
+	@SCHEMA=$$(cat infra/spicedb/schema.zed) && \
+		TOKEN=$$(grep SPICEDB_PRESHARED_KEY .env | cut -d= -f2) && \
+		PAYLOAD=$$(jq -n --arg schema "$$SCHEMA" '{schema: $$schema}') && \
+		curl -sf -X POST "http://localhost:$${SPICEDB_HTTP_PORT:-8443}/v1/schema/write" \
+			-H "Authorization: Bearer $$TOKEN" \
+			-H "Content-Type: application/json" \
+			-d "$$PAYLOAD" > /dev/null
 	@echo "$(GREEN)✓$(NC) Schema applied"
 
 spicedb-seed: ## Seed SpiceDB with test users, teams, and documents

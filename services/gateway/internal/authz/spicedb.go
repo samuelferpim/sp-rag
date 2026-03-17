@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	pb "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	authzed "github.com/authzed/authzed-go/v1"
@@ -12,6 +13,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// sanitizeObjectID converts a file path to a valid SpiceDB ObjectId.
+// SpiceDB only allows [a-zA-Z0-9/_|\-=+] so we replace dots with underscores.
+func sanitizeObjectID(id string) string {
+	return strings.ReplaceAll(id, ".", "_")
+}
 
 // AuthzClient wraps the SpiceDB gRPC client for permission checks.
 type AuthzClient struct {
@@ -39,7 +46,7 @@ func (a *AuthzClient) CheckDocumentAccess(ctx context.Context, userID, documentI
 	resp, err := a.client.CheckPermission(ctx, &pb.CheckPermissionRequest{
 		Resource: &pb.ObjectReference{
 			ObjectType: "document",
-			ObjectId:   documentID,
+			ObjectId:   sanitizeObjectID(documentID),
 		},
 		Permission: "view",
 		Subject: &pb.SubjectReference{
@@ -93,13 +100,15 @@ func (a *AuthzClient) GetUserTeams(ctx context.Context, userID string) ([]string
 func (a *AuthzClient) CreateDocumentRelationships(ctx context.Context, documentID, ownerUserID string, viewerTeams []string) error {
 	updates := make([]*pb.RelationshipUpdate, 0, 1+len(viewerTeams))
 
+	safeID := sanitizeObjectID(documentID)
+
 	// Owner relationship
 	updates = append(updates, &pb.RelationshipUpdate{
 		Operation: pb.RelationshipUpdate_OPERATION_TOUCH,
 		Relationship: &pb.Relationship{
 			Resource: &pb.ObjectReference{
 				ObjectType: "document",
-				ObjectId:   documentID,
+				ObjectId:   safeID,
 			},
 			Relation: "owner",
 			Subject: &pb.SubjectReference{
@@ -118,7 +127,7 @@ func (a *AuthzClient) CreateDocumentRelationships(ctx context.Context, documentI
 			Relationship: &pb.Relationship{
 				Resource: &pb.ObjectReference{
 					ObjectType: "document",
-					ObjectId:   documentID,
+					ObjectId:   safeID,
 				},
 				Relation: "viewer",
 				Subject: &pb.SubjectReference{
