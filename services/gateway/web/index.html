@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SP-RAG — Secure Polyglot RAG</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --green: #3fb950;
+            --green-bg: rgba(63, 185, 80, 0.15);
+            --red: #f85149;
+            --red-bg: rgba(248, 81, 73, 0.15);
+            --blue: #58a6ff;
+            --blue-bg: rgba(88, 166, 255, 0.15);
+            --yellow: #d29922;
+            --yellow-bg: rgba(210, 153, 34, 0.15);
+            --purple: #bc8cff;
+            --radius: 8px;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        header h1 span { color: var(--accent); }
+
+        .header-status {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-dot.healthy { background: var(--green); box-shadow: 0 0 6px var(--green); }
+        .status-dot.unhealthy { background: var(--red); box-shadow: 0 0 6px var(--red); }
+        .status-dot.unknown { background: var(--text-muted); }
+
+        .status-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        main {
+            flex: 1;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+            width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 768px) {
+            main { grid-template-columns: 1fr; }
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+        }
+
+        .card h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card h2 .icon {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+        }
+
+        .full-width { grid-column: 1 / -1; }
+
+        /* Drop zone */
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            padding: 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: var(--accent);
+            background: rgba(88, 166, 255, 0.05);
+        }
+
+        .drop-zone p { color: var(--text-secondary); font-size: 14px; }
+        .drop-zone .browse { color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+        .file-info {
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            font-size: 13px;
+            display: none;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .file-info.visible { display: flex; }
+        .file-info .name { flex: 1; }
+        .file-info .size { color: var(--text-muted); }
+
+        /* Forms */
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        input[type="text"], textarea, select {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-size: 14px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus, textarea:focus, select:focus {
+            border-color: var(--accent);
+        }
+
+        textarea { resize: vertical; min-height: 60px; }
+
+        .checkbox-group {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .checkbox-group label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            color: var(--text-primary);
+        }
+
+        input[type="checkbox"] {
+            accent-color: var(--accent);
+            width: 16px;
+            height: 16px;
+        }
+
+        .form-row { margin-bottom: 16px; }
+
+        button {
+            padding: 8px 20px;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover { background: var(--accent-hover); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Badge */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .badge-green { background: var(--green-bg); color: var(--green); }
+        .badge-blue { background: var(--blue-bg); color: var(--blue); }
+        .badge-red { background: var(--red-bg); color: var(--red); }
+        .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
+
+        /* Upload status */
+        .upload-status {
+            margin-top: 12px;
+            padding: 10px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .upload-status.visible { display: block; }
+        .upload-status.success { background: var(--green-bg); color: var(--green); }
+        .upload-status.error { background: var(--red-bg); color: var(--red); }
+        .upload-status.loading { background: var(--blue-bg); color: var(--blue); }
+
+        /* Query result */
+        .result-container { display: none; }
+        .result-container.visible { display: block; }
+
+        .result-answer {
+            background: var(--bg-tertiary);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 12px;
+            font-size: 14px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+        }
+
+        .result-meta {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .sources-list {
+            list-style: none;
+            margin-top: 8px;
+        }
+
+        .sources-list li {
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            margin-bottom: 6px;
+            font-size: 13px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sources-list .score {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        /* Timing bars */
+        .timing-container { margin-top: 12px; }
+
+        .timing-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+
+        .timing-label {
+            width: 60px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        .timing-bar-wrapper {
+            flex: 1;
+            height: 16px;
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 0 8px;
+        }
+
+        .timing-bar {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        .timing-bar.embed { background: var(--purple); }
+        .timing-bar.authz { background: var(--yellow); }
+        .timing-bar.cache { background: var(--green); }
+        .timing-bar.qdrant { background: var(--blue); }
+        .timing-bar.llm { background: var(--red); }
+
+        .timing-value {
+            width: 50px;
+            text-align: right;
+            color: var(--text-muted);
+        }
+
+        /* System status */
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 10px;
+        }
+
+        .service-item {
+            padding: 10px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 16px 24px;
+            text-align: center;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        footer a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        footer a:hover { text-decoration: underline; }
+
+        .hidden-input { display: none; }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1><span>SP-RAG</span> — Secure Polyglot RAG</h1>
+    <div class="header-status">
+        <span class="status-label">
+            <span class="status-dot unknown" id="headerStatusDot"></span>
+            <span id="headerStatusText">Checking...</span>
+        </span>
+    </div>
+</header>
+
+<main>
+    <!-- Upload Section -->
+    <div class="card">
+        <h2><span class="icon" aria-hidden="true">&#x2191;</span> Upload Document</h2>
+
+        <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Drop a PDF file here or click to browse">
+            <p>Drag &amp; drop a PDF here, or <span class="browse">browse</span></p>
+            <input type="file" accept=".pdf" class="hidden-input" id="fileInput" aria-label="Select PDF file">
+        </div>
+
+        <div class="file-info" id="fileInfo">
+            <span class="name" id="fileName"></span>
+            <span class="size" id="fileSize"></span>
+        </div>
+
+        <div class="form-row" style="margin-top: 16px;">
+            <label>Permissions</label>
+            <div class="checkbox-group">
+                <label><input type="checkbox" value="finance_team" name="permissions"> Finance</label>
+                <label><input type="checkbox" value="eng_team" name="permissions"> Engineering</label>
+                <label><input type="checkbox" value="hr_team" name="permissions"> HR</label>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <label for="uploadUser">Upload as user</label>
+            <select id="uploadUser" aria-label="Select user for upload">
+                <option value="alice">Alice (Finance + HR)</option>
+                <option value="bob">Bob (Engineering)</option>
+                <option value="charlie">Charlie (Engineering + Finance)</option>
+            </select>
+        </div>
+
+        <button id="uploadBtn" disabled aria-label="Upload document">Upload</button>
+
+        <div class="upload-status" id="uploadStatus" role="status" aria-live="polite"></div>
+    </div>
+
+    <!-- Query Section -->
+    <div class="card">
+        <h2><span class="icon" aria-hidden="true">&#x2315;</span> Ask a Question</h2>
+
+        <div class="form-row">
+            <label for="queryUser">Query as user</label>
+            <select id="queryUser" aria-label="Select user for query">
+                <option value="alice">Alice (Finance + HR)</option>
+                <option value="bob">Bob (Engineering)</option>
+                <option value="charlie">Charlie (Engineering + Finance)</option>
+            </select>
+        </div>
+
+        <div class="form-row">
+            <label for="queryInput">Your question</label>
+            <textarea id="queryInput" placeholder="e.g. What is the CAP theorem?" aria-label="Enter your question"></textarea>
+        </div>
+
+        <button id="queryBtn" aria-label="Submit query">Ask</button>
+
+        <div class="result-container" id="resultContainer">
+            <div class="result-meta" id="resultMeta"></div>
+            <div class="result-answer" id="resultAnswer"></div>
+
+            <h3 style="font-size: 13px; color: var(--text-secondary); margin-bottom: 6px;">Sources</h3>
+            <ul class="sources-list" id="sourcesList"></ul>
+
+            <div class="timing-container" id="timingContainer"></div>
+        </div>
+    </div>
+
+    <!-- System Status -->
+    <div class="card full-width">
+        <h2><span class="icon" aria-hidden="true">&#x2699;</span> System Status</h2>
+        <div class="services-grid" id="servicesGrid">
+            <div class="service-item">
+                <span class="status-dot unknown" id="statusGateway"></span> Gateway
+            </div>
+            <div class="service-item">
+                <span class="status-dot unknown" id="statusRedpanda"></span> Redpanda
+            </div>
+            <div class="service-item">
+                <span class="status-dot unknown" id="statusQdrant"></span> Qdrant
+            </div>
+            <div class="service-item">
+                <span class="status-dot unknown" id="statusRedis"></span> Redis
+            </div>
+            <div class="service-item">
+                <span class="status-dot unknown" id="statusMinio"></span> MinIO
+            </div>
+            <div class="service-item">
+                <span class="status-dot unknown" id="statusSpicedb"></span> SpiceDB
+            </div>
+        </div>
+    </div>
+</main>
+
+<footer>
+    <a href="https://github.com/spimentel/sp-rag" target="_blank" rel="noopener">GitHub</a>
+    &nbsp;&middot;&nbsp;
+    Built with Go + Python &nbsp;|&nbsp; Zero-Trust RAG
+</footer>
+
+<script>
+(function() {
+    'use strict';
+
+    const API = '/api/v1';
+    let selectedFile = null;
+
+    // ─── Elements ────────────────────────────────────────────
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileInfo = document.getElementById('fileInfo');
+    const fileName = document.getElementById('fileName');
+    const fileSize = document.getElementById('fileSize');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const uploadUser = document.getElementById('uploadUser');
+
+    const queryInput = document.getElementById('queryInput');
+    const queryBtn = document.getElementById('queryBtn');
+    const queryUser = document.getElementById('queryUser');
+    const resultContainer = document.getElementById('resultContainer');
+    const resultMeta = document.getElementById('resultMeta');
+    const resultAnswer = document.getElementById('resultAnswer');
+    const sourcesList = document.getElementById('sourcesList');
+    const timingContainer = document.getElementById('timingContainer');
+
+    // ─── File Upload ─────────────────────────────────────────
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+    });
+
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) selectFile(files[0]);
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length > 0) selectFile(fileInput.files[0]);
+    });
+
+    function selectFile(file) {
+        if (!file.name.toLowerCase().endsWith('.pdf')) {
+            showUploadStatus('Only PDF files are supported.', 'error');
+            return;
+        }
+        selectedFile = file;
+        fileName.textContent = file.name;
+        fileSize.textContent = formatBytes(file.size);
+        fileInfo.classList.add('visible');
+        uploadBtn.disabled = false;
+        hideUploadStatus();
+    }
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    uploadBtn.addEventListener('click', async () => {
+        if (!selectedFile) return;
+
+        const perms = Array.from(document.querySelectorAll('input[name="permissions"]:checked'))
+            .map(cb => cb.value);
+        const userId = uploadUser.value;
+
+        const form = new FormData();
+        form.append('file', selectedFile);
+        form.append('user_id', userId);
+        if (perms.length > 0) form.append('permissions', perms.join(','));
+
+        uploadBtn.disabled = true;
+        showUploadStatus('Uploading...', 'loading');
+
+        try {
+            const resp = await fetch(API + '/documents/upload', { method: 'POST', body: form });
+            const data = await resp.json();
+
+            if (resp.ok) {
+                showUploadStatus('Uploaded successfully. Processing in background...', 'success');
+            } else {
+                showUploadStatus('Upload failed: ' + (data.error || resp.statusText), 'error');
+            }
+        } catch (err) {
+            showUploadStatus('Upload failed: ' + err.message, 'error');
+        } finally {
+            uploadBtn.disabled = false;
+        }
+    });
+
+    function showUploadStatus(msg, type) {
+        uploadStatus.textContent = msg;
+        uploadStatus.className = 'upload-status visible ' + type;
+    }
+
+    function hideUploadStatus() {
+        uploadStatus.className = 'upload-status';
+    }
+
+    // ─── Query ───────────────────────────────────────────────
+
+    queryBtn.addEventListener('click', submitQuery);
+    queryInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
+    });
+
+    async function submitQuery() {
+        const query = queryInput.value.trim();
+        const userId = queryUser.value;
+
+        if (!query) return;
+
+        queryBtn.disabled = true;
+        queryBtn.innerHTML = '<span class="loading-spinner"></span>';
+        resultContainer.classList.remove('visible');
+
+        try {
+            const resp = await fetch(API + '/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query, user_id: userId })
+            });
+
+            const data = await resp.json();
+
+            if (resp.ok) {
+                renderResult(data);
+            } else {
+                resultAnswer.textContent = 'Error: ' + (data.error || resp.statusText);
+                resultMeta.innerHTML = '<span class="badge badge-red">Error ' + resp.status + '</span>';
+                sourcesList.innerHTML = '';
+                timingContainer.innerHTML = '';
+                resultContainer.classList.add('visible');
+            }
+        } catch (err) {
+            resultAnswer.textContent = 'Request failed: ' + err.message;
+            resultMeta.innerHTML = '<span class="badge badge-red">Network Error</span>';
+            sourcesList.innerHTML = '';
+            timingContainer.innerHTML = '';
+            resultContainer.classList.add('visible');
+        } finally {
+            queryBtn.disabled = false;
+            queryBtn.textContent = 'Ask';
+        }
+    }
+
+    function renderResult(data) {
+        resultAnswer.textContent = data.answer || 'No answer provided.';
+
+        // Meta badges
+        let metaHTML = '';
+        if (data.cached) {
+            metaHTML += '<span class="badge badge-green">Cached</span>';
+        } else {
+            metaHTML += '<span class="badge badge-blue">Generated</span>';
+        }
+        metaHTML += '<span class="badge badge-green">Authorized</span>';
+        if (data.model) {
+            metaHTML += '<span class="badge badge-yellow">' + escapeHtml(data.model) + '</span>';
+        }
+        resultMeta.innerHTML = metaHTML;
+
+        // Sources
+        if (data.sources && data.sources.length > 0) {
+            sourcesList.innerHTML = data.sources.map(s =>
+                '<li>' +
+                    '<span>' + escapeHtml(s.file_name || s.file_path) + ' — p.' + s.page + '</span>' +
+                    '<span class="score">' + (s.score ? s.score.toFixed(3) : '') + '</span>' +
+                '</li>'
+            ).join('');
+        } else {
+            sourcesList.innerHTML = '<li style="color: var(--text-muted);">No sources</li>';
+        }
+
+        // Timing
+        if (data.timing) {
+            const t = data.timing;
+            const total = t.total_ms || 1;
+            const stages = [
+                { label: 'Embed', key: 'embed_ms', cls: 'embed' },
+                { label: 'AuthZ', key: 'authz_ms', cls: 'authz' },
+                { label: 'Cache', key: 'cache_ms', cls: 'cache' },
+                { label: 'Qdrant', key: 'qdrant_ms', cls: 'qdrant' },
+                { label: 'LLM', key: 'llm_ms', cls: 'llm' },
+            ];
+
+            timingContainer.innerHTML = stages.map(s => {
+                const ms = t[s.key] || 0;
+                const pct = Math.max((ms / total) * 100, ms > 0 ? 2 : 0);
+                return '<div class="timing-row">' +
+                    '<span class="timing-label">' + s.label + '</span>' +
+                    '<div class="timing-bar-wrapper">' +
+                        '<div class="timing-bar ' + s.cls + '" style="width:' + pct + '%"></div>' +
+                    '</div>' +
+                    '<span class="timing-value">' + ms + 'ms</span>' +
+                '</div>';
+            }).join('') +
+            '<div class="timing-row" style="margin-top: 4px; font-weight: 600;">' +
+                '<span class="timing-label">Total</span>' +
+                '<div class="timing-bar-wrapper"></div>' +
+                '<span class="timing-value">' + total + 'ms</span>' +
+            '</div>';
+        } else {
+            timingContainer.innerHTML = '';
+        }
+
+        resultContainer.classList.add('visible');
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // ─── Health Check ────────────────────────────────────────
+
+    async function checkHealth() {
+        const dot = document.getElementById('headerStatusDot');
+        const text = document.getElementById('headerStatusText');
+
+        const services = {
+            Gateway: { dot: document.getElementById('statusGateway'), check: () => fetch(API + '/health').then(r => r.ok) },
+            Redpanda: { dot: document.getElementById('statusRedpanda'), check: () => fetch('http://localhost:8081/v1/node/health').then(r => r.ok).catch(() => false) },
+            Qdrant: { dot: document.getElementById('statusQdrant'), check: () => fetch('http://localhost:6333/healthz').then(r => r.ok).catch(() => false) },
+            Redis: { dot: document.getElementById('statusRedis'), check: () => Promise.resolve(null) },
+            MinIO: { dot: document.getElementById('statusMinio'), check: () => fetch('http://localhost:9000/minio/health/live').then(r => r.ok).catch(() => false) },
+            SpiceDB: { dot: document.getElementById('statusSpicedb'), check: () => Promise.resolve(null) },
+        };
+
+        let allHealthy = true;
+        let gatewayUp = false;
+
+        for (const [name, svc] of Object.entries(services)) {
+            try {
+                const result = await svc.check();
+                if (result === null) {
+                    // Can't check directly from browser (no HTTP endpoint exposed)
+                    svc.dot.className = 'status-dot ' + (gatewayUp ? 'healthy' : 'unknown');
+                } else if (result) {
+                    svc.dot.className = 'status-dot healthy';
+                    if (name === 'Gateway') gatewayUp = true;
+                } else {
+                    svc.dot.className = 'status-dot unhealthy';
+                    allHealthy = false;
+                }
+            } catch {
+                svc.dot.className = 'status-dot unhealthy';
+                allHealthy = false;
+            }
+        }
+
+        if (gatewayUp) {
+            dot.className = 'status-dot healthy';
+            text.textContent = allHealthy ? 'All systems operational' : 'Degraded';
+        } else {
+            dot.className = 'status-dot unhealthy';
+            text.textContent = 'Gateway offline';
+        }
+    }
+
+    // Initial check + auto-refresh
+    checkHealth();
+    setInterval(checkHealth, 10000);
+
+})();
+</script>
+</body>
+</html>
