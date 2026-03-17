@@ -6,10 +6,11 @@
 .PHONY: help setup up down restart logs status health clean \
         topics topics-list \
         minio-bucket \
-        spicedb-schema spicedb-check \
+        spicedb-schema spicedb-seed spicedb-check \
         gateway worker \
         bench seed \
-        fmt lint test
+        fmt lint test \
+        test-go test-python test-e2e test-all
 
 .DEFAULT_GOAL := help
 
@@ -109,6 +110,11 @@ spicedb-schema: ## Write the permission schema to SpiceDB
 		< infra/spicedb/schema.zed
 	@echo "$(GREEN)✓$(NC) Schema applied"
 
+spicedb-seed: ## Seed SpiceDB with test users, teams, and documents
+	@echo "$(YELLOW)▸$(NC) Seeding SpiceDB..."
+	@chmod +x scripts/seed_spicedb.sh
+	@./scripts/seed_spicedb.sh
+
 spicedb-check: ## Verify SpiceDB is responding
 	@docker exec sp-rag-spicedb grpc_health_probe -addr=localhost:50051 && \
 		echo "$(GREEN)✓$(NC) SpiceDB is healthy" || \
@@ -152,11 +158,27 @@ lint: ## Lint code (Go + Python)
 	@cd services/worker && python -m ruff check app/ 2>/dev/null || echo "  (install ruff: pip install ruff)"
 	@echo "$(GREEN)✓$(NC) Lint complete"
 
-test: ## Run all tests
+test: ## Run all unit tests (Go + Python)
+	@$(MAKE) test-go
+	@$(MAKE) test-python
+
+test-go: ## Run Go unit tests
 	@echo "$(YELLOW)▸$(NC) Testing Go..."
-	@cd services/gateway && go test ./... -v
+	@cd services/gateway && go test ./... -v -count=1
+
+test-python: ## Run Python unit tests
 	@echo "$(YELLOW)▸$(NC) Testing Python..."
-	@cd services/worker && python -m pytest tests/ -v 2>/dev/null || echo "  (no tests yet)"
+	@cd services/worker && python -m pytest tests/ -v
+
+test-e2e: ## Run E2E tests (requires infra + gateway + worker running)
+	@echo "$(YELLOW)▸$(NC) Running E2E tests..."
+	@chmod +x scripts/e2e_test.sh
+	@./scripts/e2e_test.sh
+
+test-all: ## Run all tests (unit + E2E)
+	@$(MAKE) test-go
+	@$(MAKE) test-python
+	@$(MAKE) test-e2e
 
 # =============================================================
 # Data & Benchmarks

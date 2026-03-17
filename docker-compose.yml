@@ -31,11 +31,11 @@ services:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
 
   # =============================================================
-  # Cache — Redis 7.4
-  # Semantic cache (RedisVL) + general purpose caching
+  # Cache — Redis Stack 7.4 (includes RediSearch for vector cache)
+  # Semantic cache (vector similarity) + exact hash cache
   # =============================================================
   redis:
-    image: redis:7.4-alpine
+    image: redis/redis-stack-server:7.4.0-v3
     container_name: sp-rag-redis
     networks: [sprag]
     restart: unless-stopped
@@ -43,13 +43,14 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    environment:
+      REDIS_ARGS: "--appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 5s
+      start_period: 10s
 
   # =============================================================
   # Message Broker — Redpanda v24.3.1 (Kafka-compatible)
@@ -206,6 +207,43 @@ services:
       start_period: 15s
 
 # =============================================================
+  # API Gateway — Go (Fiber)
+  # API: http://localhost:8081
+  # =============================================================
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: sp-rag-gateway
+    networks: [sprag]
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8081}:8081"
+    env_file:
+      - .env
+    environment:
+      - GATEWAY_PORT=8081
+      - KAFKA_BROKER=redpanda:29092
+      - MINIO_ENDPOINT=minio:9000
+      - QDRANT_HOST=qdrant
+      - QDRANT_GRPC_PORT=6334
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - REDIS_ADDR=redis:6379
+      - SPICEDB_ENDPOINT=spicedb:50051
+      - SPICEDB_PRESHARED_KEY=${SPICEDB_PRESHARED_KEY:-sprag_dev_key}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      spicedb:
+        condition: service_healthy
+
+  # =============================================================
   # AI Worker — Python (ETL & Embeddings)
   # =============================================================
   worker:

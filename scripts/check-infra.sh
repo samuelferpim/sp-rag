@@ -76,6 +76,18 @@ else
   fail "SpiceDB not responding"
 fi
 
+# --- Go Gateway ---
+info "Checking Go Gateway (API)..."
+if curl -sf http://localhost:8081/api/v1/health > /dev/null 2>&1; then
+  pass "Gateway API on :8081"
+else
+  if [ "$(docker inspect -f '{{.State.Status}}' sp-rag-gateway 2>/dev/null)" == "running" ]; then
+    pass "Gateway container is running (API may still be starting)"
+  else
+    fail "Gateway is not running"
+  fi
+fi
+
 # --- Python Worker ---
 info "Checking Python Worker (ETL & Embeddings)..."
 if [ "$(docker inspect -f '{{.State.Status}}' sp-rag-worker 2>/dev/null)" == "running" ]; then
