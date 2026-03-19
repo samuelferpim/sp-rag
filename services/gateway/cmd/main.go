@@ -23,6 +23,7 @@ import (
 	"sp-rag-gateway/internal/handler"
 	"sp-rag-gateway/internal/middleware"
 	"sp-rag-gateway/internal/orchestrator"
+	"sp-rag-gateway/internal/rag"
 )
 
 func main() {
@@ -96,8 +97,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Semantic router (query complexity classification)
+	router := rag.NewSemanticRouter(openaiClient, cfg.OpenAIFastModel)
+
 	// Query orchestrator (parallel pipeline)
-	orch := orchestrator.New(cfg, openaiClient, authzClient, redisCache, qdrantClient)
+	orch := orchestrator.New(cfg, openaiClient, authzClient, redisCache, qdrantClient, router)
 
 	h := &handler.Handler{
 		Config:       cfg,

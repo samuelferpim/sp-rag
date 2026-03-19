@@ -23,16 +23,18 @@ type QueryOrchestrator struct {
 	Authz  *authz.AuthzClient
 	Cache  *cache.RedisCache
 	Qdrant *qdrant.Client
+	Router rag.Router
 }
 
 // New creates a QueryOrchestrator with all required dependencies.
-func New(cfg *config.Config, openaiClient *openai.Client, authzClient *authz.AuthzClient, redisCache *cache.RedisCache, qdrantClient *qdrant.Client) *QueryOrchestrator {
+func New(cfg *config.Config, openaiClient *openai.Client, authzClient *authz.AuthzClient, redisCache *cache.RedisCache, qdrantClient *qdrant.Client, router rag.Router) *QueryOrchestrator {
 	return &QueryOrchestrator{
 		Config: cfg,
 		OpenAI: openaiClient,
 		Authz:  authzClient,
 		Cache:  redisCache,
 		Qdrant: qdrantClient,
+		Router: router,
 	}
 }
 
@@ -47,22 +49,32 @@ type Source struct {
 
 // Timing captures latency of each pipeline stage in milliseconds.
 type Timing struct {
+	RouterMs int64 `json:"router_ms"`
 	EmbedMs  int64 `json:"embed_ms"`
 	AuthzMs  int64 `json:"authz_ms"`
 	CacheMs  int64 `json:"cache_ms"`
 	QdrantMs int64 `json:"qdrant_ms"`
 	LLMMs    int64 `json:"llm_ms"`
+	EvalMs   int64 `json:"eval_ms"`
 	TotalMs  int64 `json:"total_ms"`
 }
 
 // QueryResult is the final output of the query pipeline.
 type QueryResult struct {
-	Answer  string   `json:"answer"`
-	Sources []Source `json:"sources"`
-	Model   string   `json:"model"`
-	Cached  bool     `json:"cached"`
-	Timing  Timing   `json:"timing"`
+	Answer   string   `json:"answer"`
+	Sources  []Source `json:"sources"`
+	Model    string   `json:"model"`
+	Cached   bool     `json:"cached"`
+	Grounded bool     `json:"grounded"`
+	Timing   Timing   `json:"timing"`
 }
+
+const (
+	// maxEvalRetries is the maximum number of evaluation rounds (draft + rewrite).
+	maxEvalRetries = 2
+	// fallbackAnswer is returned when the answer fails grounding after all retries.
+	fallbackAnswer = "Desculpe, mas não encontrei informação suficiente na base de conhecimento para garantir uma resposta precisa."
+)
 
 // QueryError carries an HTTP status code for the handler to use.
 type QueryError struct {
@@ -83,9 +95,10 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 	totalStart := time.Now()
 	var timing Timing
 
-	// ── Phase 1: Parallel — embed + authz ──────────────────────────
+	// ── Phase 1: Parallel — embed + authz + route ─────────────────
 	var queryVector []float32
 	var userTeams []string
+	var complexity rag.Complexity
 
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -117,6 +130,20 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 		}
 		userTeams = teams
 		slog.Info("user teams resolved", "user_id", userID, "teams", teams)
+		return nil
+	})
+
+	g.Go(func() error {
+		start := time.Now()
+		c, err := o.Router.Classify(gCtx, query)
+		timing.RouterMs = time.Since(start).Milliseconds()
+		if err != nil {
+			slog.Warn("router classification error, defaulting to complex", "error", err)
+			complexity = rag.ComplexityComplex
+			return nil
+		}
+		complexity = c
+		slog.Info("query classified", "complexity", string(c), "router_ms", timing.RouterMs)
 		return nil
 	})
 
@@ -212,44 +239,103 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 		}, nil
 	}
 
-	// LLM call
+	// Select model based on query complexity
+	model := o.Config.OpenAIChatModel
+	if complexity == rag.ComplexitySimple {
+		model = o.Config.OpenAIFastModel
+	}
+
+	// ── Step 1 (Draft): Generate initial answer ─────────────────────
 	llmStart := time.Now()
 	messages := rag.BuildPrompt(query, chunks)
-	answer, err := rag.CallLLM(ctx, o.OpenAI, o.Config.OpenAIChatModel, messages)
+	answer, err := rag.CallLLM(ctx, o.OpenAI, model, messages)
 	timing.LLMMs = time.Since(llmStart).Milliseconds()
 	if err != nil {
 		slog.Error("failed to call LLM", "error", err)
 		return nil, &QueryError{500, "failed to generate answer", err}
 	}
 
+	// ── Step 2 (Evaluation): Self-reflection loop ───────────────────
+	evalStart := time.Now()
+	grounded := false
+
+	for attempt := range maxEvalRetries {
+		evalMessages := rag.BuildEvaluationPrompt(query, chunks, answer)
+		evalResult, err := rag.EvaluateAnswer(ctx, o.OpenAI, model, evalMessages)
+		if err != nil {
+			slog.Warn("evaluation call failed, skipping self-reflection",
+				"error", err, "attempt", attempt+1)
+			break
+		}
+
+		if evalResult.IsGrounded {
+			grounded = true
+			slog.Info("answer grounded", "attempt", attempt+1)
+			break
+		}
+
+		slog.Warn("answer not grounded",
+			"attempt", attempt+1,
+			"max_attempts", maxEvalRetries,
+			"reason", evalResult.Reason,
+		)
+
+		// Last attempt: don't rewrite, will use fallback
+		if attempt >= maxEvalRetries-1 {
+			break
+		}
+
+		// Rewrite: ask LLM to fix the answer focusing only on facts
+		retryMessages := rag.BuildRetryPrompt(query, chunks, answer, evalResult.Reason)
+		newAnswer, err := rag.CallLLM(ctx, o.OpenAI, model, retryMessages)
+		if err != nil {
+			slog.Warn("retry LLM call failed", "error", err, "attempt", attempt+1)
+			break
+		}
+		answer = newAnswer
+	}
+
+	timing.EvalMs = time.Since(evalStart).Milliseconds()
+
+	if !grounded {
+		answer = fallbackAnswer
+	}
+
 	timing.TotalMs = time.Since(totalStart).Milliseconds()
 
 	result := &QueryResult{
-		Answer:  answer,
-		Sources: sources,
-		Model:   o.Config.OpenAIChatModel,
-		Timing:  timing,
+		Answer:   answer,
+		Sources:  sources,
+		Model:    model,
+		Grounded: grounded,
+		Timing:   timing,
 	}
 
-	// Save to caches (best-effort)
-	if respBytes, err := json.Marshal(result); err == nil {
-		if err := o.Cache.SetExact(ctx, query, userTeams, respBytes); err != nil {
-			slog.Warn("failed to set exact cache", "error", err)
-		}
-		if err := o.Cache.SetSemantic(ctx, queryVector, userTeams, respBytes); err != nil {
-			slog.Warn("failed to set semantic cache", "error", err)
+	// Save to caches only if answer is grounded (best-effort)
+	if grounded {
+		if respBytes, err := json.Marshal(result); err == nil {
+			if err := o.Cache.SetExact(ctx, query, userTeams, respBytes); err != nil {
+				slog.Warn("failed to set exact cache", "error", err)
+			}
+			if err := o.Cache.SetSemantic(ctx, queryVector, userTeams, respBytes); err != nil {
+				slog.Warn("failed to set semantic cache", "error", err)
+			}
 		}
 	}
 
 	slog.Info("query processed",
 		"user_id", userID,
 		"chunks_found", len(chunks),
-		"model", o.Config.OpenAIChatModel,
+		"model", model,
+		"complexity", string(complexity),
+		"grounded", grounded,
+		"router_ms", timing.RouterMs,
 		"embed_ms", timing.EmbedMs,
 		"authz_ms", timing.AuthzMs,
 		"cache_ms", timing.CacheMs,
 		"qdrant_ms", timing.QdrantMs,
 		"llm_ms", timing.LLMMs,
+		"eval_ms", timing.EvalMs,
 		"total_ms", timing.TotalMs,
 	)
 

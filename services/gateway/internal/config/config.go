@@ -25,6 +25,7 @@ type Config struct {
 	OpenAIAPIKey             string
 	OpenAIEmbeddingModel     string
 	OpenAIChatModel          string
+	OpenAIFastModel          string
 	EmbeddingDimensions      int
 	QueryTopK                int
 	RedisAddr                string
@@ -61,6 +62,7 @@ func Load() (*Config, error) {
 		OpenAIAPIKey:             apiKey,
 		OpenAIEmbeddingModel:     envOr("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
 		OpenAIChatModel:          envOr("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+		OpenAIFastModel:          envOr("OPENAI_FAST_MODEL", "gpt-4o-mini"),
 		EmbeddingDimensions:      envOrInt("OPENAI_EMBEDDING_DIMENSIONS", 1536),
 		QueryTopK:                envOrInt("QUERY_TOP_K", 5),
 		RedisAddr:                envOr("REDIS_ADDR", "localhost:6379"),
