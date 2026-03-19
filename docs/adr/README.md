@@ -18,6 +18,9 @@ ADRs document significant architectural decisions made during the design and imp
 | [008](008-project-structure.md) | Monorepo with Domain Separation | Accepted |
 | [009](009-minio-for-storage.md) | MinIO for Object Storage | Accepted |
 | [010](010-confluent-kafka-over-kafka-python.md) | confluent-kafka over kafka-python | Accepted |
+| [011](011-smart-chunking.md) | Smart Chunking (Section-Aware, Character-Based) | Accepted |
+| [012](012-semantic-router.md) | Semantic Router (Query Complexity Classification) | Accepted |
+| [013](013-self-reflection-grounding.md) | Self-Reflection / LLM-as-a-Judge for Grounding | Accepted |
 
 ## Format
 

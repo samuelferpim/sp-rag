@@ -100,27 +100,42 @@ curl -X POST http://localhost:8081/api/v1/query \
   ],
   "model": "gpt-4o-mini",
   "cached": false,
+  "grounded": true,
   "timing": {
+    "router_ms": 280,
     "embed_ms": 180,
     "authz_ms": 8,
     "cache_ms": 3,
     "qdrant_ms": 45,
     "llm_ms": 520,
-    "total_ms": 756
+    "eval_ms": 410,
+    "total_ms": 1166
   }
 }
 ```
 
-**Timing breakdown:** The `timing` field shows latency of each pipeline stage in milliseconds. `embed` and `authz` run in parallel (Phase 1), so total is less than the sum.
+**Response fields:**
+
+| Field      | Type   | Description |
+|------------|--------|-------------|
+| `answer`   | string | Generated answer (or fallback message if grounding failed) |
+| `sources`  | array  | Document chunks used, with file, page, score, snippet |
+| `model`    | string | LLM model used (selected by semantic router based on query complexity) |
+| `cached`   | bool   | Whether the response came from cache |
+| `grounded` | bool   | Whether the answer passed the self-reflection grounding check |
+| `timing`   | object | Latency breakdown per pipeline stage (ms) |
+
+**Timing breakdown:** The `timing` field shows latency of each pipeline stage in milliseconds. `embed`, `authz`, and `router` run in parallel (Phase 1), so total is less than the sum. `eval_ms` includes the self-reflection evaluation (and retry if needed).
 
 **How it works:**
-1. The query is embedded via OpenAI (`text-embedding-3-small`)
+1. **Phase 1 (parallel):** The query is embedded via OpenAI, user permissions resolved via SpiceDB, and the **semantic router** classifies query complexity (`simples` or `complexa`) — all in parallel goroutines
 2. **Semantic cache** check: searches Redis for a similar query vector with matching permission hash (threshold: 0.92)
 3. **Exact cache** fallback: looks up SHA-256(normalized query + permission hash) in Redis
 4. Cache miss: Qdrant vector search filtered by user permissions
-5. Retrieved chunks assembled into a RAG prompt
-6. OpenAI (`gpt-4o-mini`) generates the answer
-7. Response saved to both caches (exact + semantic) with TTL (default: 1h)
+5. **Model selection**: simple queries use a fast model (`OPENAI_FAST_MODEL`), complex queries use the main model (`OPENAI_CHAT_MODEL`)
+6. LLM generates a draft answer from the retrieved chunks
+7. **Self-reflection (LLM-as-a-Judge)**: evaluates if the answer is 100% grounded in the retrieved context. If not grounded, rewrites and re-evaluates (max 2 attempts). If still not grounded, returns a safe fallback message
+8. Grounded responses are saved to both caches (exact + semantic) with TTL (default: 1h)
 
 **Cache behavior:**
 - The `cached` field in the response indicates whether the answer came from cache

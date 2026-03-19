@@ -158,6 +158,9 @@ assert_status "POST /query returns 200" 200 "$STATUS"
 assert_contains "Response contains answer" "answer" "$BODY"
 assert_contains "Response contains sources" "sources" "$BODY"
 assert_contains "Response contains timing" "timing" "$BODY"
+assert_contains "Response contains grounded field" "grounded" "$BODY"
+assert_contains "Response contains router_ms timing" "router_ms" "$BODY"
+assert_contains "Response contains eval_ms timing" "eval_ms" "$BODY"
 
 # ─── Test 4: Query (Unauthorized User) ───────────────────────
 

@@ -76,9 +76,9 @@ sequenceDiagram
     S3-->>Py: PDF bytes
 
     rect rgb(240, 248, 255)
-        Note over Py: ETL Pipeline
+        Note over Py: ETL Pipeline (Smart Chunking)
         Py->>Py: Extract text (unstructured.io)
-        Py->>Py: Clean & chunk (~512 tokens)
+        Py->>Py: Smart chunk (sections, char-based)
     end
 
     Py->>AI: Generate embeddings
@@ -107,31 +107,40 @@ sequenceDiagram
     par Phase 1 — Parallel Goroutines
         Go->>AuthZ: Check user permissions
         Go->>AI: Embed query → vector
+        Go->>AI: Classify complexity (Router)
     end
 
     AuthZ-->>Go: permissions: ["finance_team"]
     AI-->>Go: query vector (1536 dims)
+    AI-->>Go: complexity: "simples" | "complexa"
 
     Note over Go,Cache: Phase 2 — Permission-Aware Cache Lookup
 
     Go->>Cache: Search semantic cache (vector + permission hash)
     Cache-->>Go: cache miss
 
-    Note over Go,VDB: Phase 3 — RAG Pipeline
+    Note over Go,VDB: Phase 3 — RAG Pipeline + Self-Reflection
 
     Go->>VDB: Vector search + permission filter
     VDB-->>Go: Top-K relevant chunks
 
     rect rgb(255, 248, 240)
         Note over Go: Build RAG Prompt
-        Go->>Go: System prompt + chunks + query
+        Go->>Go: Select model (fast vs main)
     end
 
-    Go->>AI: Chat completion (GPT-4o)
-    AI-->>Go: Generated answer
+    Go->>AI: Chat completion (draft)
+    AI-->>Go: Draft answer
 
-    Go->>Cache: Save response (vector + permission hash, TTL 1h)
-    Go-->>User: 200 OK { answer, sources }
+    rect rgb(255, 240, 240)
+        Note over Go,AI: Self-Reflection (LLM-as-a-Judge)
+        Go->>AI: Evaluate: is answer grounded?
+        AI-->>Go: {"is_grounded": true/false}
+        Note over Go: If not grounded: rewrite + re-evaluate (max 2x)
+    end
+
+    Go->>Cache: Save grounded response (TTL 1h)
+    Go-->>User: 200 OK { answer, sources, grounded }
 ```
 
 ---
@@ -152,15 +161,17 @@ sequenceDiagram
     par Phase 1 — Parallel Goroutines
         Go->>AuthZ: Check user permissions
         Go->>AI: Embed query → vector
+        Go->>AI: Classify complexity (Router)
     end
 
     AuthZ-->>Go: permissions: ["finance_team"]
     AI-->>Go: query vector (1536 dims)
+    AI-->>Go: complexity (unused on cache hit)
 
     Go->>Cache: Search permission-aware semantic cache
     Cache-->>Go: cache hit (matching vector + permission scope)
 
-    Note over Go: No Qdrant, No LLM call, No extra cost
+    Note over Go: No Qdrant, No LLM, No evaluation needed
 
     Go-->>User: 200 OK { answer, sources, cached: true }
 ```

@@ -6,9 +6,9 @@
 ![Qdrant](https://img.shields.io/badge/Qdrant-Vector_DB-FF5252?style=for-the-badge)
 ![SpiceDB](https://img.shields.io/badge/SpiceDB-Zero_Trust-4285F4?style=for-the-badge)
 
-An enterprise-grade **Retrieval-Augmented Generation** system with document-level access control, semantic caching, and a polyglot architecture (Go + Python).
+An enterprise-grade **Retrieval-Augmented Generation** system with document-level access control, semantic caching, self-reflection grounding, and a polyglot architecture (Go + Python).
 
-SP-RAG tackles three critical problems in production AI systems: **LLM latency** (semantic cache cuts repeat queries from ~6s to ~400ms), **API costs** (cached responses skip OpenAI entirely), and **data governance** (SpiceDB ensures the LLM only sees what the user is allowed to see).
+SP-RAG tackles four critical problems in production AI systems: **LLM latency** (semantic cache cuts repeat queries from ~6s to ~400ms), **API costs** (semantic router selects cheap models for simple queries), **hallucinations** (LLM-as-a-Judge evaluates every answer for grounding), and **data governance** (SpiceDB ensures the LLM only sees what the user is allowed to see).
 
 This project is also the foundation for a master's thesis comparing monolithic vs polyglot RAG architectures under load.
 
@@ -26,13 +26,13 @@ This project is also the foundation for a master's thesis comparing monolithic v
 ┌────────────────────────────────────────────────────────────┐
 │                  Go API Gateway (Fiber)                     │
 │                                                            │
-│  Phase 1 (parallel)          Phase 2        Phase 3        │
-│  ┌──────────┐ ┌────────┐   ┌───────┐   ┌──────┐ ┌─────┐  │
-│  │ Embed    │ │ AuthZ  │   │ Cache │   │Qdrant│ │ LLM │  │
-│  │ (OpenAI) │ │(SpiceDB│   │(Redis)│   │Search│ │(GPT)│  │
-│  └────┬─────┘ └───┬────┘   └───┬───┘   └──┬───┘ └──┬──┘  │
-│       │           │            │           │        │      │
-└───────┼───────────┼────────────┼───────────┼────────┼──────┘
+│  Phase 1 (parallel)               Phase 2      Phase 3          │
+│  ┌──────────┐ ┌────────┐ ┌─────┐ ┌───────┐ ┌──────┐ ┌─────┐   │
+│  │ Embed    │ │ AuthZ  │ │Route│ │ Cache │ │Qdrant│ │ LLM │   │
+│  │ (OpenAI) │ │(SpiceDB│ │(LLM)│ │(Redis)│ │Search│ │+Eval│   │
+│  └────┬─────┘ └───┬────┘ └──┬──┘ └───┬───┘ └──┬───┘ └──┬──┘   │
+│       │           │         │        │        │        │        │
+└───────┼───────────┼─────────┼────────┼────────┼────────┼───────┘
         v           v            v           v        v
    ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐ ┌──────┐
    │ OpenAI │  │SpiceDB │  │ Redis  │  │ Qdrant │ │OpenAI│
@@ -58,9 +58,9 @@ This project is also the foundation for a master's thesis comparing monolithic v
 ```
 
 **Query pipeline:**
-1. **Phase 1 (parallel):** Embed query via OpenAI + resolve user teams via SpiceDB (goroutines + errgroup)
+1. **Phase 1 (parallel):** Embed query + resolve user teams (SpiceDB) + classify complexity (Semantic Router) — all via goroutines + errgroup
 2. **Phase 2:** Check semantic cache (Redis) -> if hit, return immediately (~400ms)
-3. **Phase 3:** Qdrant vector search (with permission filter) -> SpiceDB post-filter -> LLM -> cache result -> return (~6s)
+3. **Phase 3:** Qdrant vector search (with permission filter) -> SpiceDB post-filter -> LLM (model selected by router) -> Self-reflection (LLM-as-a-Judge grounding check, max 2 retries) -> cache grounded result -> return
 
 ---
 
@@ -147,9 +147,9 @@ make seed
 The Python worker will automatically:
 1. Download the PDF from MinIO
 2. Extract text with `unstructured.io`
-3. Chunk into ~512-token overlapping windows
+3. Smart chunk by sections (Title elements as boundaries, character-based limits, section metadata)
 4. Generate embeddings via OpenAI
-5. Store vectors + metadata in Qdrant
+5. Store vectors + metadata (including `section_title`) in Qdrant
 
 Watch it happen: `make logs-worker`
 
@@ -249,13 +249,16 @@ Query the RAG pipeline.
   ],
   "model": "gpt-4o-mini",
   "cached": false,
+  "grounded": true,
   "timing": {
+    "router_ms": 312,
     "embed_ms": 528,
     "authz_ms": 68,
     "cache_ms": 4,
     "qdrant_ms": 6,
     "llm_ms": 5253,
-    "total_ms": 5799
+    "eval_ms": 890,
+    "total_ms": 6689
   }
 }
 ```
@@ -324,8 +327,8 @@ sp-rag/
 │   │   └── internal/
 │   │       ├── handler/        # HTTP handlers + static routes
 │   │       ├── middleware/     # CORS, request logging
-│   │       ├── orchestrator/  # Query pipeline (parallel phases)
-│   │       ├── rag/            # Prompt building, LLM calls
+│   │       ├── orchestrator/  # Query pipeline (parallel phases + self-reflection)
+│   │       ├── rag/            # Prompt building, LLM calls, router, evaluation
 │   │       ├── cache/          # Redis exact + semantic cache
 │   │       ├── authz/          # SpiceDB integration
 │   │       └── config/         # Environment config loader

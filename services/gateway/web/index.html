@@ -323,11 +323,13 @@
             transition: width 0.3s ease;
         }
 
+        .timing-bar.router { background: #f0883e; }
         .timing-bar.embed { background: var(--purple); }
         .timing-bar.authz { background: var(--yellow); }
         .timing-bar.cache { background: var(--green); }
         .timing-bar.qdrant { background: var(--blue); }
         .timing-bar.llm { background: var(--red); }
+        .timing-bar.eval { background: #da3633; }
 
         .timing-value {
             width: 50px;
@@ -662,6 +664,11 @@
             metaHTML += '<span class="badge badge-blue">Generated</span>';
         }
         metaHTML += '<span class="badge badge-green">Authorized</span>';
+        if (data.grounded === true) {
+            metaHTML += '<span class="badge badge-green">Grounded</span>';
+        } else if (data.grounded === false && !data.cached) {
+            metaHTML += '<span class="badge badge-red">Not Grounded</span>';
+        }
         if (data.model) {
             metaHTML += '<span class="badge badge-yellow">' + escapeHtml(data.model) + '</span>';
         }
@@ -684,11 +691,13 @@
             const t = data.timing;
             const total = t.total_ms || 1;
             const stages = [
+                { label: 'Router', key: 'router_ms', cls: 'router' },
                 { label: 'Embed', key: 'embed_ms', cls: 'embed' },
                 { label: 'AuthZ', key: 'authz_ms', cls: 'authz' },
                 { label: 'Cache', key: 'cache_ms', cls: 'cache' },
                 { label: 'Qdrant', key: 'qdrant_ms', cls: 'qdrant' },
                 { label: 'LLM', key: 'llm_ms', cls: 'llm' },
+                { label: 'Eval', key: 'eval_ms', cls: 'eval' },
             ];
 
             timingContainer.innerHTML = stages.map(s => {
