@@ -91,16 +91,16 @@ class Config:
     )
 
     # ── ETL / Chunking ────────────────────────────────────────────────
-    # Token approximation: 1 word ≈ 1 token (conservative, avoids tiktoken dep)
+    # Smart chunking uses character count (~4 chars ≈ 1 token)
     chunk_size: int = field(
-        default_factory=lambda: _env_int("CHUNK_SIZE", 512)
+        default_factory=lambda: _env_int("CHUNK_SIZE", 2000)
     )
     chunk_overlap: int = field(
-        default_factory=lambda: _env_int("CHUNK_OVERLAP", 50)
+        default_factory=lambda: _env_int("CHUNK_OVERLAP", 200)
     )
-    # Chunks shorter than this (in words) are discarded
+    # Chunks shorter than this (in characters) are discarded
     min_chunk_length: int = field(
-        default_factory=lambda: _env_int("MIN_CHUNK_LENGTH", 20)
+        default_factory=lambda: _env_int("MIN_CHUNK_LENGTH", 50)
     )
 
 

@@ -11,9 +11,9 @@ from app.etl import TextChunk
 @pytest.fixture
 def sample_chunks() -> list[TextChunk]:
     return [
-        TextChunk(text="Distributed systems overview", page=1, chunk_index=0),
-        TextChunk(text="Consensus protocols like Raft", page=2, chunk_index=1),
-        TextChunk(text="CAP theorem implications", page=2, chunk_index=2),
+        TextChunk(text="Distributed systems overview", page=1, chunk_index=0, metadata={"section_title": "Introduction"}),
+        TextChunk(text="Consensus protocols like Raft", page=2, chunk_index=1, metadata={"section_title": "Protocols"}),
+        TextChunk(text="CAP theorem implications", page=2, chunk_index=2, metadata={"section_title": "Protocols"}),
     ]
 
 
@@ -152,3 +152,16 @@ class TestUpsertVectors:
         assert payload["source_file"] == "report.pdf"
         assert payload["permissions"] == ["engineering_team"]
         assert payload["uploaded_by"] == "user_123"
+        assert payload["section_title"] == "Introduction"
+
+    def test_upsert_section_title_from_chunk_metadata(self, sample_chunks, sample_metadata, mock_config):
+        mock_qdrant = MagicMock()
+        vectors = [[0.1] * 1536 for _ in sample_chunks]
+
+        upsert_vectors(
+            mock_qdrant, mock_config.qdrant_collection, sample_chunks, vectors, sample_metadata
+        )
+
+        points = mock_qdrant.upsert.call_args.kwargs["points"]
+        assert points[0].payload["section_title"] == "Introduction"
+        assert points[1].payload["section_title"] == "Protocols"

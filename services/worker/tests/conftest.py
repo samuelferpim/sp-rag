@@ -61,11 +61,11 @@ def text_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def mock_config():
-    """Create a mock Config with default values."""
+    """Create a mock Config with default values (character-based chunking)."""
     cfg = MagicMock()
-    cfg.chunk_size = 512
-    cfg.chunk_overlap = 50
-    cfg.min_chunk_length = 20
+    cfg.chunk_size = 2000
+    cfg.chunk_overlap = 200
+    cfg.min_chunk_length = 50
     cfg.openai_embedding_model = "text-embedding-3-small"
     cfg.openai_embedding_dimensions = 1536
     cfg.openai_batch_size = 100

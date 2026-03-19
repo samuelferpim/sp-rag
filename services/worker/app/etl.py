@@ -1,16 +1,19 @@
 """
-ETL module — PDF extraction, cleaning, and chunking.
+ETL module — PDF extraction, cleaning, and smart chunking.
 
 Pipeline:
-PDF path → unstructured elements → filter noise → sliding-window chunks
+PDF path → unstructured elements → filter noise → semantic chunking
 
-Chunking uses word count as a token approximation (no tiktoken dependency).
-One word ≈ one token is conservative but avoids an extra dependency.
+Smart chunking preserves document structure: Title elements act as section
+markers, content blocks (paragraphs) are kept whole when possible, and each
+chunk carries metadata (section_title) for richer retrieval context.
+
+Size limits use character count (not word count) for more predictable splits.
 """
 
 import logging
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from unstructured.documents.elements import (
@@ -19,6 +22,7 @@ from unstructured.documents.elements import (
     Header,
     Image,
     PageBreak,
+    Title,
 )
 from unstructured.partition.pdf import partition_pdf
 
@@ -35,8 +39,9 @@ class TextChunk:
     """A single text chunk ready for embedding."""
 
     text: str
-    page: int          # 1-based page number of the first word in this chunk
-    chunk_index: int   # sequential index within the document
+    page: int              # 1-based page number of the first element in this chunk
+    chunk_index: int       # sequential index within the document
+    metadata: dict = field(default_factory=dict)  # e.g. {"section_title": "..."}
 
 
 def extract_elements(pdf_path: str) -> list[Element]:
@@ -109,64 +114,112 @@ def chunk_elements(
     overlap: int,
     min_chunk_length: int,
 ) -> list[TextChunk]:
-    """Split a list of content elements into overlapping text chunks.
+    """Split elements into semantically coherent text chunks.
 
-    Uses a sliding window over individual words, preserving page provenance
-    for each chunk (page of the first word in the window).
+    Groups content preserving section boundaries: Title elements act as
+    section markers (stored in chunk metadata), and content blocks
+    (paragraphs) are kept whole when possible. Section changes force a
+    clean break (no overlap across sections); size-based splits carry
+    trailing blocks as overlap for context continuity.
 
     Args:
         elements:         Filtered list of unstructured elements.
-        chunk_size:       Target chunk size in words (≈ tokens).
-        overlap:          Number of words shared between consecutive chunks.
-        min_chunk_length: Discard chunks shorter than this word count.
+        chunk_size:       Target chunk size in characters.
+        overlap:          Characters of overlap between consecutive chunks.
+        min_chunk_length: Discard chunks shorter than this character count.
 
     Returns:
-        Ordered list of TextChunk objects.
+        Ordered list of TextChunk objects with section metadata.
     """
     if chunk_size <= overlap:
         raise ValueError(
             f"chunk_size ({chunk_size}) must be greater than overlap ({overlap})"
         )
 
-    # Flatten all elements into a (word, page) stream
-    words: list[tuple[str, int]] = []
-    for el in elements:
-        page = _get_page(el)
-        for word in str(el).split():
-            words.append((word, page))
+    # ── Step 1: Convert elements to content blocks with section tracking ──
+    current_section: str = ""
+    blocks: list[tuple[str, int, str]] = []  # (text, page, section_title)
 
-    if not words:
-        logger.warning("No words extracted from elements")
+    for el in elements:
+        text = str(el).strip()
+        if not text:
+            continue
+        if isinstance(el, Title):
+            current_section = text
+            continue  # Title is a section marker, not content
+        blocks.append((text, _get_page(el), current_section))
+
+    if not blocks:
+        logger.warning("No content blocks extracted from elements")
         return []
 
+    # ── Step 2: Greedily group blocks into chunks ─────────────────────────
     chunks: list[TextChunk] = []
-    step = chunk_size - overlap
-    chunk_index = 0
-    i = 0
+    chunk_idx = 0
 
-    while i < len(words):
-        window = words[i : i + chunk_size]
-        text = " ".join(w for w, _ in window)
+    acc_texts: list[str] = []
+    acc_pages: list[int] = []
+    acc_section: str = blocks[0][2]
+    acc_len: int = 0
 
-        if len(window) >= min_chunk_length:
+    def _flush_chunk() -> None:
+        """Emit accumulated blocks as a chunk if they meet min length."""
+        nonlocal chunk_idx
+        chunk_text = "\n\n".join(acc_texts)
+        if len(chunk_text) >= min_chunk_length:
             chunks.append(
                 TextChunk(
-                    text=text,
-                    page=window[0][1],
-                    chunk_index=chunk_index,
+                    text=chunk_text,
+                    page=acc_pages[0],
+                    chunk_index=chunk_idx,
+                    metadata={"section_title": acc_section},
                 )
             )
-            chunk_index += 1
+            chunk_idx += 1
 
-        i += step
+    def _overlap_carry() -> tuple[list[str], list[int], int]:
+        """Return trailing blocks that fit within the overlap budget."""
+        carry_t: list[str] = []
+        carry_p: list[int] = []
+        carry_len = 0
+        for t, p in reversed(list(zip(acc_texts, acc_pages))):
+            if carry_len + len(t) > overlap:
+                break
+            carry_t.insert(0, t)
+            carry_p.insert(0, p)
+            carry_len += len(t)
+        return carry_t, carry_p, carry_len
+
+    for text, page, section in blocks:
+        # Section change → flush with clean break (no overlap)
+        if section != acc_section and acc_texts:
+            _flush_chunk()
+            acc_texts, acc_pages, acc_len = [], [], 0
+            acc_section = section
+
+        # Size limit → flush with overlap for context continuity
+        sep = 2 if acc_texts else 0  # "\n\n" separator
+        if acc_len + sep + len(text) > chunk_size and acc_texts:
+            _flush_chunk()
+            acc_texts, acc_pages, acc_len = _overlap_carry()
+            acc_section = section
+            sep = 2 if acc_texts else 0
+
+        acc_texts.append(text)
+        acc_pages.append(page)
+        acc_len += sep + len(text)
+
+    # Flush remaining blocks
+    if acc_texts:
+        _flush_chunk()
 
     logger.info(
         "Chunking complete",
         extra={
-            "word_count": len(words),
+            "block_count": len(blocks),
             "chunk_count": len(chunks),
-            "chunk_size": chunk_size,
-            "overlap": overlap,
+            "chunk_size_chars": chunk_size,
+            "overlap_chars": overlap,
         },
     )
     return chunks

@@ -189,6 +189,7 @@ def upsert_vectors(
                     "file_path": metadata.file_path,
                     "page": chunk.page,
                     "chunk_index": chunk.chunk_index,
+                    "section_title": chunk.metadata.get("section_title", ""),
                     "permissions": metadata.permissions,
                     "uploaded_by": metadata.user_id,
                     "uploaded_at": metadata.uploaded_at,
