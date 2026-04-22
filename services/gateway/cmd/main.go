@@ -21,6 +21,8 @@ import (
 	"sp-rag-gateway/internal/cache"
 	"sp-rag-gateway/internal/config"
 	"sp-rag-gateway/internal/handler"
+	"sp-rag-gateway/internal/legal"
+	legalweb "sp-rag-gateway/internal/legal/web"
 	"sp-rag-gateway/internal/middleware"
 	"sp-rag-gateway/internal/orchestrator"
 	"sp-rag-gateway/internal/portaria"
@@ -154,6 +156,16 @@ func main() {
 			slog.Warn("portaria: whatsapp channel disabled (missing APP_SECRET, ACCESS_TOKEN, or PHONE_MAP)")
 		}
 		slog.Info("portaria: web channel enabled at /portaria and /api/v1/portaria/chat")
+	}
+
+	// Legal vertical (optional). Enable with LEGAL_ENABLED=true.
+	if cfg.LegalEnabled {
+		legalSvc := legal.NewService(orch, cfg.LegalTopK, cfg.LegalStrictCitation)
+		legalweb.NewHandler(legalSvc).Register(app, "/api/v1")
+		slog.Info("legal: enabled at /legal and /api/v1/legal/query",
+			"strict_citation", cfg.LegalStrictCitation,
+			"top_k", cfg.LegalTopK,
+		)
 	}
 
 	// Graceful shutdown

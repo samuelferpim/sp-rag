@@ -22,6 +22,7 @@ ADRs document significant architectural decisions made during the design and imp
 | [012](012-semantic-router.md) | Semantic Router (Query Complexity Classification) | Accepted |
 | [013](013-self-reflection-grounding.md) | Self-Reflection / LLM-as-a-Judge for Grounding | Accepted |
 | [014](014-portaria-vertical.md) | Portaria Vertical — Multi-channel Layout | Accepted |
+| [015](015-legal-vertical.md) | Legal-Tech Vertical — Citation Verification | Accepted |
 
 ## Format
 

@@ -55,6 +55,13 @@ type Config struct {
 	// Format: "<phone_number_id>:<tenant_id>,<phone_number_id>:<tenant_id>"
 	// Each condo has its own Meta phone_number_id mapped to its tenant.
 	PortariaWhatsAppPhoneMap map[string]string
+
+	// Legal-tech vertical. All LEGAL_* vars are optional; when
+	// LegalEnabled is false, cmd/main.go does not register the /legal
+	// and /api/v1/legal/* routes.
+	LegalEnabled        bool
+	LegalTopK           int
+	LegalStrictCitation bool
 }
 
 func Load() (*Config, error) {
@@ -103,6 +110,10 @@ func Load() (*Config, error) {
 		PortariaWhatsAppAppSecret: os.Getenv("PORTARIA_WHATSAPP_APP_SECRET"),
 		PortariaWhatsAppAccessTok: os.Getenv("PORTARIA_WHATSAPP_ACCESS_TOKEN"),
 		PortariaWhatsAppPhoneMap:  parsePhoneMap(os.Getenv("PORTARIA_WHATSAPP_PHONE_MAP")),
+
+		LegalEnabled:        envOrBool("LEGAL_ENABLED", false),
+		LegalTopK:           envOrInt("LEGAL_TOP_K", 6),
+		LegalStrictCitation: envOrBool("LEGAL_STRICT_CITATION", true),
 	}, nil
 }
 

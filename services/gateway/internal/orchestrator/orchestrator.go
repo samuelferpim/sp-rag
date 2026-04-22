@@ -41,12 +41,19 @@ func New(cfg *config.Config, openaiClient *openai.Client, authzClient *authz.Aut
 }
 
 // Source represents a document chunk used in the answer.
+//
+// Entities carries the regex-extracted legal references (articles, laws,
+// decrees, CNPJs) that the Python worker stamped into the Qdrant payload.
+// Verticals like legal-tech use this to verify that citations in the LLM's
+// answer actually map to retrieved chunks — without it, we'd have to
+// re-parse chunk text every request.
 type Source struct {
-	FileName string  `json:"file_name"`
-	FilePath string  `json:"file_path"`
-	Page     int     `json:"page"`
-	Score    float32 `json:"score"`
-	Snippet  string  `json:"snippet"`
+	FileName string              `json:"file_name"`
+	FilePath string              `json:"file_path"`
+	Page     int                 `json:"page"`
+	Score    float32             `json:"score"`
+	Snippet  string              `json:"snippet"`
+	Entities map[string][]string `json:"entities,omitempty"`
 }
 
 // Timing captures latency of each pipeline stage in milliseconds.
@@ -445,6 +452,7 @@ func (o *QueryOrchestrator) filterAndExtract(ctx context.Context, results []*qdr
 			Page:     page,
 			Score:    point.GetScore(),
 			Snippet:  snippet,
+			Entities: extractEntities(payload["entities"]),
 		})
 	}
 
@@ -455,6 +463,45 @@ func (o *QueryOrchestrator) filterAndExtract(ctx context.Context, results []*qdr
 	)
 
 	return chunks, sources
+}
+
+// extractEntities converts the Qdrant "entities" payload (a struct-of-lists
+// written by the Python worker — see etl.extract_entities) into a plain Go
+// map. Returns nil if the payload is missing or empty so JSON omits the field.
+//
+// Qdrant payload shape (via Go client):
+//
+//	entities -> Value{StructValue{
+//	    fields: { "articles": Value{ListValue{[Value{StringValue}]}}, ... }
+//	}}
+func extractEntities(v *qdrant.Value) map[string][]string {
+	if v == nil {
+		return nil
+	}
+	s := v.GetStructValue()
+	if s == nil || len(s.GetFields()) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(s.GetFields()))
+	for k, fv := range s.GetFields() {
+		list := fv.GetListValue()
+		if list == nil {
+			continue
+		}
+		values := make([]string, 0, len(list.GetValues()))
+		for _, item := range list.GetValues() {
+			if str := item.GetStringValue(); str != "" {
+				values = append(values, str)
+			}
+		}
+		if len(values) > 0 {
+			out[k] = values
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // buildPermissionFilter creates a Qdrant filter that:
