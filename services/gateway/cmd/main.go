@@ -23,6 +23,9 @@ import (
 	"sp-rag-gateway/internal/handler"
 	"sp-rag-gateway/internal/middleware"
 	"sp-rag-gateway/internal/orchestrator"
+	"sp-rag-gateway/internal/portaria"
+	portariaweb "sp-rag-gateway/internal/portaria/web"
+	"sp-rag-gateway/internal/portaria/whatsapp"
 	"sp-rag-gateway/internal/rag"
 )
 
@@ -130,6 +133,28 @@ func main() {
 
 	// Demo UI (static files)
 	handler.RegisterStaticRoutes(app)
+
+	// Portaria vertical (optional). Enable with PORTARIA_ENABLED=true.
+	if cfg.PortariaEnabled {
+		portariaSvc := portaria.NewService(orch, cfg.PortariaTopK, cfg.PortariaHumanContact)
+		portariaweb.NewHandler(portariaSvc).Register(app, "/api/v1")
+
+		wppCfg := whatsapp.Config{
+			VerifyToken:     cfg.PortariaWhatsAppVerifyTok,
+			AppSecret:       cfg.PortariaWhatsAppAppSecret,
+			AccessToken:     cfg.PortariaWhatsAppAccessTok,
+			TenantByPhoneID: cfg.PortariaWhatsAppPhoneMap,
+		}
+		if wppCfg.AppSecret != "" && wppCfg.AccessToken != "" && len(wppCfg.TenantByPhoneID) > 0 {
+			sender := whatsapp.NewMetaClient(wppCfg.AccessToken)
+			whatsapp.NewHandler(wppCfg, portariaSvc, sender).Register(app)
+			slog.Info("portaria: whatsapp channel enabled",
+				"tenants", len(wppCfg.TenantByPhoneID))
+		} else {
+			slog.Warn("portaria: whatsapp channel disabled (missing APP_SECRET, ACCESS_TOKEN, or PHONE_MAP)")
+		}
+		slog.Info("portaria: web channel enabled at /portaria and /api/v1/portaria/chat")
+	}
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
