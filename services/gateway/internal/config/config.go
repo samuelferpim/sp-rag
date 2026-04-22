@@ -36,6 +36,12 @@ type Config struct {
 	SpiceDBEndpoint          string
 	SpiceDBPresharedKey      string
 	QueryTimeoutSeconds      int
+	// Per-stage strict timeouts. The handler-level QueryTimeoutSeconds caps
+	// the whole pipeline; these caps keep any single dependency from eating
+	// the whole budget (e.g. a hung LLM starving the Qdrant search).
+	QdrantTimeoutSeconds int
+	LLMTimeoutSeconds    int
+	EvalTimeoutSeconds   int
 }
 
 func Load() (*Config, error) {
@@ -73,6 +79,9 @@ func Load() (*Config, error) {
 		SpiceDBEndpoint:          envOr("SPICEDB_ENDPOINT", "localhost:50051"),
 		SpiceDBPresharedKey:      envOr("SPICEDB_PRESHARED_KEY", "sprag_dev_key"),
 		QueryTimeoutSeconds:      envOrInt("QUERY_TIMEOUT_SECONDS", 30),
+		QdrantTimeoutSeconds:     envOrInt("QDRANT_TIMEOUT_SECONDS", 5),
+		LLMTimeoutSeconds:        envOrInt("LLM_TIMEOUT_SECONDS", 15),
+		EvalTimeoutSeconds:       envOrInt("EVAL_TIMEOUT_SECONDS", 8),
 	}, nil
 }
 

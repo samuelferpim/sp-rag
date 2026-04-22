@@ -100,8 +100,11 @@ func main() {
 	// Semantic router (query complexity classification)
 	router := rag.NewSemanticRouter(openaiClient, cfg.OpenAIFastModel)
 
+	// LLM-as-a-Judge evaluator (grounding check)
+	evaluator := rag.NewLLMEvaluator(openaiClient, cfg.OpenAIFastModel)
+
 	// Query orchestrator (parallel pipeline)
-	orch := orchestrator.New(cfg, openaiClient, authzClient, redisCache, qdrantClient, router)
+	orch := orchestrator.New(cfg, openaiClient, authzClient, redisCache, qdrantClient, router, evaluator)
 
 	h := &handler.Handler{
 		Config:       cfg,
@@ -118,6 +121,7 @@ func main() {
 	app.Use(recover.New())
 	app.Use(middleware.CORS())
 	app.Use(middleware.RequestLogger())
+	app.Use(middleware.TenantResolver())
 
 	api := app.Group("/api/v1")
 	api.Get("/health", h.Health)

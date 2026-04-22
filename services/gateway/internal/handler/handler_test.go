@@ -57,12 +57,25 @@ func TestQuery_EmptyBody_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+func TestQuery_MissingTenantID_Returns400(t *testing.T) {
+	h := newTestHandler()
+	app := fiber.New()
+	app.Post("/query", h.Query)
+
+	body := `{"query": "what is rag?", "user_id": "alice"}`
+	req := httptest.NewRequest(http.MethodPost, "/query", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "tenant_id is mandatory")
+}
+
 func TestQuery_MissingQuery_Returns400(t *testing.T) {
 	h := newTestHandler()
 	app := fiber.New()
 	app.Post("/query", h.Query)
 
-	body := `{"user_id": "alice"}`
+	body := `{"tenant_id": "acme", "user_id": "alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/query", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -75,13 +88,14 @@ func TestQuery_MissingUserID_Returns400(t *testing.T) {
 	app := fiber.New()
 	app.Post("/query", h.Query)
 
-	body := `{"query": "what is distributed computing?"}`
+	body := `{"tenant_id": "acme", "query": "what is distributed computing?"}`
 	req := httptest.NewRequest(http.MethodPost, "/query", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
 
 func TestQuery_InvalidJSON_Returns400(t *testing.T) {
 	h := newTestHandler()

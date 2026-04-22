@@ -134,6 +134,7 @@ pdf.output('$TEST_PDF')
 
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$API/documents/upload" \
     -F "file=@${TEST_PDF}" \
+    -F "tenant_id=acme" \
     -F "user_id=alice" \
     -F "permissions=finance_team,eng_team")
 STATUS=$(echo "$RESP" | tail -1)
@@ -141,6 +142,15 @@ BODY=$(echo "$RESP" | sed '$d')
 
 assert_status "POST /upload returns 202" 202 "$STATUS"
 assert_contains "Response contains file_path" "file_path" "$BODY"
+assert_contains "Response contains tenant_id" "tenant_id" "$BODY"
+assert_contains "MinIO path is tenant-scoped" "documents/acme/" "$BODY"
+
+# Upload missing tenant_id must fail
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/documents/upload" \
+    -F "file=@${TEST_PDF}" \
+    -F "user_id=alice" \
+    -F "permissions=finance_team")
+assert_status "Upload without tenant_id returns 400" 400 "$STATUS"
 
 # Wait for worker to process
 wait_for_processing 30
@@ -150,7 +160,7 @@ wait_for_processing 30
 echo -e "\n${CYAN}Test 3: Query (Authorized User)${NC}"
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$API/query" \
     -H "Content-Type: application/json" \
-    -d '{"query": "What is the CAP theorem?", "user_id": "alice"}')
+    -d '{"tenant_id": "acme", "query": "What is the CAP theorem?", "user_id": "alice"}')
 STATUS=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
 
@@ -167,7 +177,7 @@ assert_contains "Response contains eval_ms timing" "eval_ms" "$BODY"
 echo -e "\n${CYAN}Test 4: Query (Unauthorized User)${NC}"
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$API/query" \
     -H "Content-Type: application/json" \
-    -d '{"query": "What is the CAP theorem?", "user_id": "unknown_user_no_teams"}')
+    -d '{"tenant_id": "acme", "query": "What is the CAP theorem?", "user_id": "unknown_user_no_teams"}')
 STATUS=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
 
@@ -175,16 +185,23 @@ BODY=$(echo "$RESP" | sed '$d')
 assert_status "POST /query returns 200 (but empty)" 200 "$STATUS"
 assert_contains "Response has answer field" "answer" "$BODY"
 
+# Cross-tenant isolation: diana is in tenant:contoso — must NOT see tenant:acme content.
+echo -e "\n${CYAN}Test 4b: Cross-Tenant Isolation${NC}"
+RESP=$(curl -s -X POST "$API/query" \
+    -H "Content-Type: application/json" \
+    -d '{"tenant_id": "contoso", "query": "What is the CAP theorem?", "user_id": "diana"}')
+assert_not_contains "contoso tenant sees no acme sources" "documents/acme/" "$RESP"
+
 # ─── Test 5: Cache Hit (Second Query) ────────────────────────
 
 echo -e "\n${CYAN}Test 5: Cache Hit (Same Query Twice)${NC}"
 RESP1=$(curl -s -X POST "$API/query" \
     -H "Content-Type: application/json" \
-    -d '{"query": "What is the CAP theorem?", "user_id": "alice"}')
+    -d '{"tenant_id": "acme", "query": "What is the CAP theorem?", "user_id": "alice"}')
 
 RESP2=$(curl -s -X POST "$API/query" \
     -H "Content-Type: application/json" \
-    -d '{"query": "What is the CAP theorem?", "user_id": "alice"}')
+    -d '{"tenant_id": "acme", "query": "What is the CAP theorem?", "user_id": "alice"}')
 
 CACHED=$(echo "$RESP2" | grep -o '"cached":true' || echo "")
 TOTAL=$((TOTAL + 1))
@@ -206,16 +223,22 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/query" \
     -d '{}')
 assert_status "Empty body returns 400" 400 "$STATUS"
 
+# Missing tenant_id
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/query" \
+    -H "Content-Type: application/json" \
+    -d '{"query": "test", "user_id": "alice"}')
+assert_status "Missing tenant_id returns 400" 400 "$STATUS"
+
 # Missing query
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/query" \
     -H "Content-Type: application/json" \
-    -d '{"user_id": "alice"}')
+    -d '{"tenant_id": "acme", "user_id": "alice"}')
 assert_status "Missing query returns 400" 400 "$STATUS"
 
 # Missing user_id
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/query" \
     -H "Content-Type: application/json" \
-    -d '{"query": "test"}')
+    -d '{"tenant_id": "acme", "query": "test"}')
 assert_status "Missing user_id returns 400" 400 "$STATUS"
 
 # No file in upload

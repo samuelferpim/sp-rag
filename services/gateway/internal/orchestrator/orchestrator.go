@@ -18,23 +18,25 @@ import (
 
 // QueryOrchestrator coordinates the parallel query pipeline.
 type QueryOrchestrator struct {
-	Config *config.Config
-	OpenAI *openai.Client
-	Authz  *authz.AuthzClient
-	Cache  *cache.RedisCache
-	Qdrant *qdrant.Client
-	Router rag.Router
+	Config    *config.Config
+	OpenAI    *openai.Client
+	Authz     *authz.AuthzClient
+	Cache     *cache.RedisCache
+	Qdrant    *qdrant.Client
+	Router    rag.Router
+	Evaluator rag.Evaluator
 }
 
 // New creates a QueryOrchestrator with all required dependencies.
-func New(cfg *config.Config, openaiClient *openai.Client, authzClient *authz.AuthzClient, redisCache *cache.RedisCache, qdrantClient *qdrant.Client, router rag.Router) *QueryOrchestrator {
+func New(cfg *config.Config, openaiClient *openai.Client, authzClient *authz.AuthzClient, redisCache *cache.RedisCache, qdrantClient *qdrant.Client, router rag.Router, evaluator rag.Evaluator) *QueryOrchestrator {
 	return &QueryOrchestrator{
-		Config: cfg,
-		OpenAI: openaiClient,
-		Authz:  authzClient,
-		Cache:  redisCache,
-		Qdrant: qdrantClient,
-		Router: router,
+		Config:    cfg,
+		OpenAI:    openaiClient,
+		Authz:     authzClient,
+		Cache:     redisCache,
+		Qdrant:    qdrantClient,
+		Router:    router,
+		Evaluator: evaluator,
 	}
 }
 
@@ -88,10 +90,17 @@ func (e *QueryError) Unwrap() error { return e.Err }
 
 // Execute runs the full query pipeline with parallel orchestration.
 //
-// Phase 1 (parallel): embed query + get user teams from SpiceDB
-// Phase 2 (sequential): cache lookup (needs vector + teams from Phase 1)
-// Phase 3 (sequential, on cache miss): Qdrant search → SpiceDB verify → LLM → cache write
-func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, topK int) (*QueryResult, error) {
+// Phase 1 (parallel): embed query + get user teams from SpiceDB + route complexity
+// Phase 2 (sequential): cache lookup scoped by tenant (needs vector + teams from Phase 1)
+// Phase 3 (sequential, on cache miss): Qdrant search (tenant-filtered) → SpiceDB verify → LLM → cache write
+//
+// tenantID is mandatory: it is enforced as a Must filter in Qdrant and as a keyspace
+// partition in Redis to guarantee absolute data isolation across clients.
+func (o *QueryOrchestrator) Execute(ctx context.Context, tenantID, query, userID string, topK int) (*QueryResult, error) {
+	if tenantID == "" {
+		return nil, &QueryError{400, "tenant_id is required", nil}
+	}
+
 	totalStart := time.Now()
 	var timing Timing
 
@@ -154,8 +163,8 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 	// ── Phase 2: Cache lookup (needs vector + teams) ───────────────
 	cacheStart := time.Now()
 
-	// Semantic cache
-	if data, similarity, err := o.Cache.GetSemantic(ctx, queryVector, userTeams); err != nil {
+	// Semantic cache (tenant-scoped)
+	if data, similarity, err := o.Cache.GetSemantic(ctx, tenantID, queryVector, userTeams); err != nil {
 		slog.Warn("semantic cache lookup error", "error", err)
 	} else if data == nil {
 		slog.Debug("semantic cache below threshold", "similarity", similarity, "user_id", userID, "threshold", o.Config.RedisSimilarityThreshold)
@@ -176,8 +185,8 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 		}
 	}
 
-	// Exact cache fallback
-	if data, err := o.Cache.GetExact(ctx, query, userTeams); err == nil && data != nil {
+	// Exact cache fallback (tenant-scoped)
+	if data, err := o.Cache.GetExact(ctx, tenantID, query, userTeams); err == nil && data != nil {
 		var result QueryResult
 		if err := json.Unmarshal(data, &result); err == nil {
 			result.Cached = true
@@ -198,18 +207,21 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 
 	// ── Phase 3: Qdrant → SpiceDB verify → LLM ────────────────────
 
-	// Qdrant search with permission pre-filter
+	// Qdrant search with tenant isolation + permission pre-filter
 	qdrantStart := time.Now()
-	filter := buildPermissionFilter(userTeams, userID)
+	filter := buildPermissionFilter(tenantID, userTeams, userID)
 	limit := uint64(topK)
 
-	searchResult, err := o.Qdrant.Query(ctx, &qdrant.QueryPoints{
+	// Strict per-stage timeout: keeps a hung Qdrant from eating the handler budget.
+	qdrantCtx, qdrantCancel := context.WithTimeout(ctx, time.Duration(o.Config.QdrantTimeoutSeconds)*time.Second)
+	searchResult, err := o.Qdrant.Query(qdrantCtx, &qdrant.QueryPoints{
 		CollectionName: o.Config.QdrantCollection,
 		Query:          qdrant.NewQueryDense(queryVector),
 		Limit:          &limit,
-		WithPayload:    qdrant.NewWithPayloadInclude("text", "source_file", "file_path", "page", "chunk_index"),
+		WithPayload:    qdrant.NewWithPayloadInclude("text", "source_file", "file_path", "page", "chunk_index", "tenant_id", "section_title", "entities"),
 		Filter:         filter,
 	})
+	qdrantCancel()
 	timing.QdrantMs = time.Since(qdrantStart).Milliseconds()
 	if err != nil {
 		slog.Error("failed to search qdrant", "error", err)
@@ -247,54 +259,19 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 
 	// ── Step 1 (Draft): Generate initial answer ─────────────────────
 	llmStart := time.Now()
-	messages := rag.BuildPrompt(query, chunks)
-	answer, err := rag.CallLLM(ctx, o.OpenAI, model, messages)
+	draft, err := o.callLLMWithTimeout(ctx, model, rag.BuildPrompt(query, chunks))
 	timing.LLMMs = time.Since(llmStart).Milliseconds()
 	if err != nil {
 		slog.Error("failed to call LLM", "error", err)
 		return nil, &QueryError{500, "failed to generate answer", err}
 	}
 
-	// ── Step 2 (Evaluation): Self-reflection loop ───────────────────
+	// ── Step 2 (Evaluation): Self-reflection retry loop ─────────────
 	evalStart := time.Now()
-	grounded := false
-
-	for attempt := range maxEvalRetries {
-		evalMessages := rag.BuildEvaluationPrompt(query, chunks, answer)
-		evalResult, err := rag.EvaluateAnswer(ctx, o.OpenAI, model, evalMessages)
-		if err != nil {
-			slog.Warn("evaluation call failed, skipping self-reflection",
-				"error", err, "attempt", attempt+1)
-			break
-		}
-
-		if evalResult.IsGrounded {
-			grounded = true
-			slog.Info("answer grounded", "attempt", attempt+1)
-			break
-		}
-
-		slog.Warn("answer not grounded",
-			"attempt", attempt+1,
-			"max_attempts", maxEvalRetries,
-			"reason", evalResult.Reason,
-		)
-
-		// Last attempt: don't rewrite, will use fallback
-		if attempt >= maxEvalRetries-1 {
-			break
-		}
-
-		// Rewrite: ask LLM to fix the answer focusing only on facts
-		retryMessages := rag.BuildRetryPrompt(query, chunks, answer, evalResult.Reason)
-		newAnswer, err := rag.CallLLM(ctx, o.OpenAI, model, retryMessages)
-		if err != nil {
-			slog.Warn("retry LLM call failed", "error", err, "attempt", attempt+1)
-			break
-		}
-		answer = newAnswer
+	retryFn := func(ctx context.Context, previous, reason string) (string, error) {
+		return o.callLLMWithTimeout(ctx, model, rag.BuildRetryPrompt(query, chunks, previous, reason))
 	}
-
+	answer, grounded := refineUntilGrounded(ctx, o.Evaluator, retryFn, query, chunks, draft, o.evalTimeout())
 	timing.EvalMs = time.Since(evalStart).Milliseconds()
 
 	if !grounded {
@@ -314,16 +291,17 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 	// Save to caches only if answer is grounded (best-effort)
 	if grounded {
 		if respBytes, err := json.Marshal(result); err == nil {
-			if err := o.Cache.SetExact(ctx, query, userTeams, respBytes); err != nil {
+			if err := o.Cache.SetExact(ctx, tenantID, query, userTeams, respBytes); err != nil {
 				slog.Warn("failed to set exact cache", "error", err)
 			}
-			if err := o.Cache.SetSemantic(ctx, queryVector, userTeams, respBytes); err != nil {
+			if err := o.Cache.SetSemantic(ctx, tenantID, queryVector, userTeams, respBytes); err != nil {
 				slog.Warn("failed to set semantic cache", "error", err)
 			}
 		}
 	}
 
 	slog.Info("query processed",
+		"tenant_id", tenantID,
 		"user_id", userID,
 		"chunks_found", len(chunks),
 		"model", model,
@@ -340,6 +318,79 @@ func (o *QueryOrchestrator) Execute(ctx context.Context, query, userID string, t
 	)
 
 	return result, nil
+}
+
+// callLLMWithTimeout wraps rag.CallLLM with the per-stage LLM timeout.
+func (o *QueryOrchestrator) callLLMWithTimeout(ctx context.Context, model string, messages []openai.ChatCompletionMessage) (string, error) {
+	llmCtx, cancel := context.WithTimeout(ctx, time.Duration(o.Config.LLMTimeoutSeconds)*time.Second)
+	defer cancel()
+	return rag.CallLLM(llmCtx, o.OpenAI, model, messages)
+}
+
+func (o *QueryOrchestrator) evalTimeout() time.Duration {
+	return time.Duration(o.Config.EvalTimeoutSeconds) * time.Second
+}
+
+// refineUntilGrounded runs the LLM-as-Judge self-reflection loop over an
+// already-produced initial draft.
+//
+// On each iteration we ask the Evaluator whether the current answer is grounded
+// in `chunks`. Grounded → return immediately. Not grounded → ask the `retry`
+// closure for a rewrite that incorporates the evaluator's reason, and loop.
+// Any evaluator or retry error short-circuits the loop and returns the latest
+// draft with grounded=false (the caller is responsible for swapping in the
+// fallback message).
+//
+// The loop is capped at maxEvalRetries evaluations total. Each evaluator call
+// gets its own `evalTimeout` deadline so a stuck judge never dominates the
+// handler budget.
+//
+// This function is intentionally decoupled from OpenAI/Qdrant so the retry
+// semantics can be exercised in pure unit tests.
+func refineUntilGrounded(
+	ctx context.Context,
+	eval rag.Evaluator,
+	retry func(ctx context.Context, previous, reason string) (string, error),
+	query string,
+	chunks []rag.Chunk,
+	initialDraft string,
+	evalTimeout time.Duration,
+) (string, bool) {
+	answer := initialDraft
+	for attempt := range maxEvalRetries {
+		evalCtx, cancel := context.WithTimeout(ctx, evalTimeout)
+		result, err := eval.Evaluate(evalCtx, query, chunks, answer)
+		cancel()
+		if err != nil {
+			slog.Warn("evaluation call failed, skipping self-reflection",
+				"error", err, "attempt", attempt+1)
+			return answer, false
+		}
+
+		if result.IsGrounded {
+			slog.Info("answer grounded", "attempt", attempt+1)
+			return answer, true
+		}
+
+		slog.Warn("answer not grounded",
+			"attempt", attempt+1,
+			"max_attempts", maxEvalRetries,
+			"reason", result.Reason,
+		)
+
+		// Last attempt: don't bother rewriting; caller will use fallback.
+		if attempt >= maxEvalRetries-1 {
+			return answer, false
+		}
+
+		newAnswer, err := retry(ctx, answer, result.Reason)
+		if err != nil {
+			slog.Warn("retry LLM call failed", "error", err, "attempt", attempt+1)
+			return answer, false
+		}
+		answer = newAnswer
+	}
+	return answer, false
 }
 
 // filterAndExtract verifies each document via SpiceDB and extracts chunks + sources.
@@ -406,13 +457,25 @@ func (o *QueryOrchestrator) filterAndExtract(ctx context.Context, results []*qdr
 	return chunks, sources
 }
 
-// buildPermissionFilter creates a Qdrant filter that matches documents the user can access.
-// Uses OR (Should): team-based permissions OR direct ownership.
-func buildPermissionFilter(teams []string, userID string) *qdrant.Filter {
-	conditions := make([]*qdrant.Condition, 0, 2)
+// buildPermissionFilter creates a Qdrant filter that:
+//   1. MUST match the tenant_id (hard isolation, zero cross-tenant leakage), AND
+//   2. MUST match at least one of the user's access paths (team permissions OR direct ownership).
+//
+// The inner Should-filter is wrapped as a nested Must condition so the outer AND semantics hold:
+//     tenant_id == X  AND  (permission IN teams  OR  uploaded_by == user)
+func buildPermissionFilter(tenantID string, teams []string, userID string) *qdrant.Filter {
+	// FAIL-SAFE: an empty tenantID here means the Execute() validation was
+	// skipped or a new caller forgot to pass it. Panicking prevents issuing
+	// a Qdrant query without tenant isolation — a silent data-leak bug.
+	if tenantID == "" {
+		panic("orchestrator.buildPermissionFilter: tenantID is empty — refusing to query Qdrant without tenant filter")
+	}
+
+	// Inner OR: user's access paths.
+	orConditions := make([]*qdrant.Condition, 0, 2)
 
 	if len(teams) > 0 {
-		conditions = append(conditions, &qdrant.Condition{
+		orConditions = append(orConditions, &qdrant.Condition{
 			ConditionOneOf: &qdrant.Condition_Field{
 				Field: &qdrant.FieldCondition{
 					Key: "permissions",
@@ -428,7 +491,7 @@ func buildPermissionFilter(teams []string, userID string) *qdrant.Filter {
 		})
 	}
 
-	conditions = append(conditions, &qdrant.Condition{
+	orConditions = append(orConditions, &qdrant.Condition{
 		ConditionOneOf: &qdrant.Condition_Field{
 			Field: &qdrant.FieldCondition{
 				Key: "uploaded_by",
@@ -441,7 +504,26 @@ func buildPermissionFilter(teams []string, userID string) *qdrant.Filter {
 		},
 	})
 
+	// Outer AND: tenant_id match (MUST) + access-path match (MUST, nested).
 	return &qdrant.Filter{
-		Should: conditions,
+		Must: []*qdrant.Condition{
+			{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "tenant_id",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{
+								Keyword: tenantID,
+							},
+						},
+					},
+				},
+			},
+			{
+				ConditionOneOf: &qdrant.Condition_Filter{
+					Filter: &qdrant.Filter{Should: orConditions},
+				},
+			},
+		},
 	}
 }

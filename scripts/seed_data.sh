@@ -21,18 +21,20 @@ if [ ! -f "$PDF_PATH" ]; then
     curl -s https://bitcoin.org/bitcoin.pdf -o "$PDF_PATH"
 fi
 
-echo -e "${YELLOW}▸${NC} Uploading the file to MinIO (bucket: documents)..."
+TENANT_ID="${TENANT_ID:-acme}"
+
+echo -e "${YELLOW}▸${NC} Uploading the file to MinIO (bucket: documents, tenant: ${TENANT_ID})..."
 # Copy file into MinIO container and use mc inside it (avoids Colima bind mount issues)
 docker cp "$PDF_PATH" sp-rag-minio:/tmp/sample.pdf
 docker exec sp-rag-minio mc alias set local http://localhost:9000 sprag sprag12345 > /dev/null 2>&1
-docker exec sp-rag-minio mc cp /tmp/sample.pdf local/documents/sample.pdf > /dev/null 2>&1
+docker exec sp-rag-minio mc cp /tmp/sample.pdf "local/documents/${TENANT_ID}/sample.pdf" > /dev/null 2>&1
 
 echo -e "${YELLOW}▸${NC} Publishing event to Redpanda (Kafka)..."
 # Generate current timestamp (ISO-8601)
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Create the JSON payload. Simulating your user ("samuca").
-PAYLOAD=$(echo '{"file_path": "sample.pdf", "file_name": "sample.pdf", "user_id": "samuca", "permissions": ["engineering_team", "admin"], "uploaded_at": "'$NOW'"}' | tr -d '\n')
+# Create the JSON payload. Simulating your user ("samuca") on tenant ${TENANT_ID}.
+PAYLOAD=$(echo '{"tenant_id": "'$TENANT_ID'", "file_path": "documents/'$TENANT_ID'/sample.pdf", "file_name": "sample.pdf", "user_id": "samuca", "permissions": ["engineering_team", "admin"], "uploaded_at": "'$NOW'"}' | tr -d '\n')
 
 # Publish to Redpanda
 echo "$PAYLOAD" | docker exec -i sp-rag-redpanda rpk topic produce document.uploaded

@@ -12,17 +12,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/segmentio/kafka-go"
+
+	"sp-rag-gateway/internal/middleware"
 )
 
 type UploadResponse struct {
 	DocumentID string `json:"document_id"`
+	TenantID   string `json:"tenant_id"`
 	FileName   string `json:"file_name"`
 	FilePath   string `json:"file_path"`
 	Message    string `json:"message"`
 	Status     string `json:"status"`
 }
 
+// DocumentUploadedEvent is the Kafka payload emitted on a successful upload.
+// tenant_id is mandatory: the worker uses it to scope the Qdrant payload and
+// every downstream query relies on it for isolation.
 type DocumentUploadedEvent struct {
+	TenantID    string   `json:"tenant_id"`
 	FilePath    string   `json:"file_path"`
 	FileName    string   `json:"file_name"`
 	UserID      string   `json:"user_id"`
@@ -38,7 +45,18 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 		})
 	}
 
-	userID := c.FormValue("user_id")
+	// Precedence: Go context (set by TenantResolver from header) → form-data.
+	tenantID := middleware.TenantIDFromContext(c.UserContext())
+	if tenantID == "" {
+		tenantID = strings.TrimSpace(c.FormValue("tenant_id"))
+	}
+	if !middleware.IsValidTenantID(tenantID) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "tenant_id is required and must match [a-zA-Z0-9_-]{1,64}",
+		})
+	}
+
+	userID := strings.TrimSpace(c.FormValue("user_id"))
 	if userID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "user_id is required",
@@ -55,7 +73,9 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 	}
 
 	docID := uuid.New().String()
-	filePath := fmt.Sprintf("documents/%s", file.Filename)
+	// MinIO path is now partitioned by tenant: documents/<tenant_id>/<filename>.
+	// Clear physical isolation between clients, and matches the Qdrant tenant_id payload.
+	filePath := fmt.Sprintf("documents/%s/%s", tenantID, file.Filename)
 
 	src, err := file.Open()
 	if err != nil {
@@ -80,6 +100,7 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 	}
 
 	event := DocumentUploadedEvent{
+		TenantID:    tenantID,
 		FilePath:    filePath,
 		FileName:    file.Filename,
 		UserID:      userID,
@@ -96,7 +117,9 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 	}
 
 	err = h.KafkaWriter.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(filePath),
+		// Partition by tenant so per-tenant ordering is preserved and one tenant's
+		// burst does not starve another.
+		Key:   []byte(tenantID + "|" + filePath),
 		Value: eventBytes,
 	})
 	if err != nil {
@@ -106,8 +129,8 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 		})
 	}
 
-	// Create SpiceDB relationships: owner + viewer teams
-	if err := h.Authz.CreateDocumentRelationships(ctx, filePath, userID, permissions); err != nil {
+	// Create SpiceDB relationships: tenant + owner + viewer teams
+	if err := h.Authz.CreateDocumentRelationships(ctx, filePath, tenantID, userID, permissions); err != nil {
 		slog.Error("failed to create spicedb relationships", "error", err, "file_path", filePath)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "failed to register document permissions",
@@ -116,6 +139,7 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 
 	slog.Info("document uploaded and queued",
 		"document_id", docID,
+		"tenant_id", tenantID,
 		"file_name", file.Filename,
 		"file_path", filePath,
 		"user_id", userID,
@@ -124,6 +148,7 @@ func (h *Handler) Upload(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusAccepted).JSON(UploadResponse{
 		DocumentID: docID,
+		TenantID:   tenantID,
 		FileName:   file.Filename,
 		FilePath:   filePath,
 		Message:    "Document uploaded and queued for processing",
