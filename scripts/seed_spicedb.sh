@@ -1,8 +1,12 @@
 #!/bin/bash
 # =============================================================
 # SP-RAG — SpiceDB Seed Data
-# Creates test users, teams, documents, and relationships
-# Usage: make spicedb-seed
+# Creates test tenants, users, teams, documents, and relationships.
+#
+# Tenancy model:
+#   - tenant:acme       users alice, bob, charlie (multi-tenant showcase)
+#   - tenant:contoso    user diana (isolated tenant)
+# A user can only view a document if they belong to its tenant.
 # =============================================================
 
 set -e
@@ -46,8 +50,6 @@ else
 fi
 
 # --- Create Relationships ---
-info "Creating team memberships..."
-
 write_rel() {
   local resource_type=$1
   local resource_id=$2
@@ -85,30 +87,49 @@ write_rel() {
   fi
 }
 
-# Team memberships:
+info "Creating tenant memberships..."
+
+# tenant:acme → alice (admin), bob + charlie (members)
+write_rel tenant acme    admin  user alice
+write_rel tenant acme    member user bob
+write_rel tenant acme    member user charlie
+
+# tenant:contoso → diana (admin). Isolated from tenant:acme.
+write_rel tenant contoso admin  user diana
+
+info "Creating team memberships..."
+
+# Team memberships (scoped within tenants by convention):
 #   finance_team: alice, charlie
 #   eng_team:     bob, charlie
 #   hr_team:      alice
+#   legal_team:   diana
 write_rel team finance_team member user alice
 write_rel team finance_team member user charlie
 write_rel team eng_team     member user bob
 write_rel team eng_team     member user charlie
 write_rel team hr_team      member user alice
+write_rel team legal_team   member user diana
 
 info "Creating document permissions..."
 
-# Documents with team-based viewer access:
-#   relatorio_financeiro → viewer: finance_team (alice, charlie can view)
-#   engineering_roadmap  → viewer: eng_team     (bob, charlie can view)
-#   hr_policy            → viewer: hr_team      (alice can view)
+# ── tenant:acme documents ──────────────────────────────────────────
+write_rel document relatorio_financeiro tenant tenant acme
+write_rel document engineering_roadmap  tenant tenant acme
+write_rel document hr_policy            tenant tenant acme
+
 write_rel document relatorio_financeiro viewer team finance_team member
 write_rel document engineering_roadmap  viewer team eng_team     member
 write_rel document hr_policy            viewer team hr_team      member
 
-# Document owners:
 write_rel document relatorio_financeiro owner user alice
 write_rel document engineering_roadmap  owner user bob
 write_rel document hr_policy            owner user alice
+
+# ── tenant:contoso documents ───────────────────────────────────────
+write_rel document contoso_legal_brief  tenant tenant contoso
+write_rel document contoso_legal_brief  viewer team legal_team member
+write_rel document contoso_legal_brief  owner  user diana
 
 # --- Verify Permissions ---
 info "Verifying permissions..."
@@ -138,20 +159,28 @@ check_perm() {
   fi
 }
 
-# alice: finance_team + hr_team + owner of relatorio_financeiro, hr_policy
+# tenant:acme — intra-tenant access
 check_perm relatorio_financeiro alice   allowed
 check_perm engineering_roadmap  alice   denied
 check_perm hr_policy            alice   allowed
 
-# bob: eng_team + owner of engineering_roadmap
 check_perm relatorio_financeiro bob     denied
 check_perm engineering_roadmap  bob     allowed
 check_perm hr_policy            bob     denied
 
-# charlie: finance_team + eng_team (no ownership)
 check_perm relatorio_financeiro charlie allowed
 check_perm engineering_roadmap  charlie allowed
 check_perm hr_policy            charlie denied
+
+# tenant:contoso — cross-tenant isolation.
+# diana is in legal_team but NOT a member of tenant:acme → MUST be denied on acme docs.
+check_perm relatorio_financeiro diana   denied
+check_perm engineering_roadmap  diana   denied
+check_perm contoso_legal_brief  diana   allowed
+
+# alice belongs to tenant:acme → MUST be denied on contoso docs even if she
+# were somehow added to legal_team (cross-tenant intersection blocks it).
+check_perm contoso_legal_brief  alice   denied
 
 echo ""
 echo "========================================="

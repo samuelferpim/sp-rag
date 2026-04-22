@@ -4,8 +4,24 @@ definition team {
     relation member: user
 }
 
+definition tenant {
+    relation admin: user
+    relation member: user
+
+    // Any admin or member of the tenant is considered part of it.
+    permission access = admin + member
+}
+
 definition document {
+    relation tenant: tenant
     relation owner: user
     relation viewer: user | team#member
-    permission view = owner + viewer
+
+    // A user can view a document only if:
+    //   1. They belong to the same tenant the document is attached to, AND
+    //   2. They are either the owner or a viewer (direct or via team).
+    //
+    // The intersection with tenant->access guarantees zero cross-tenant leaks,
+    // even if an owner/viewer tuple is mistakenly written across tenants.
+    permission view = (owner + viewer) & tenant->access
 }

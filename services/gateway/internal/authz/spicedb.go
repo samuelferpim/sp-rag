@@ -95,12 +95,38 @@ func (a *AuthzClient) GetUserTeams(ctx context.Context, userID string) ([]string
 	return teams, nil
 }
 
-// CreateDocumentRelationships writes owner and viewer relationships for a document.
+// CreateDocumentRelationships writes tenant, owner, and viewer relationships for a document.
 // Called during document upload to register permissions in SpiceDB.
-func (a *AuthzClient) CreateDocumentRelationships(ctx context.Context, documentID, ownerUserID string, viewerTeams []string) error {
-	updates := make([]*pb.RelationshipUpdate, 0, 1+len(viewerTeams))
+//
+// The tenant tuple (document#tenant@tenant) is mandatory: the schema's `view` permission
+// intersects with tenant->access, so a document without a tenant is unreadable by anyone.
+func (a *AuthzClient) CreateDocumentRelationships(ctx context.Context, documentID, tenantID, ownerUserID string, viewerTeams []string) error {
+	if tenantID == "" {
+		return fmt.Errorf("tenantID is required to create document relationships")
+	}
+
+	updates := make([]*pb.RelationshipUpdate, 0, 2+len(viewerTeams))
 
 	safeID := sanitizeObjectID(documentID)
+	safeTenant := sanitizeObjectID(tenantID)
+
+	// Tenant relationship: pins the document to its owning tenant.
+	updates = append(updates, &pb.RelationshipUpdate{
+		Operation: pb.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &pb.Relationship{
+			Resource: &pb.ObjectReference{
+				ObjectType: "document",
+				ObjectId:   safeID,
+			},
+			Relation: "tenant",
+			Subject: &pb.SubjectReference{
+				Object: &pb.ObjectReference{
+					ObjectType: "tenant",
+					ObjectId:   safeTenant,
+				},
+			},
+		},
+	})
 
 	// Owner relationship
 	updates = append(updates, &pb.RelationshipUpdate{
@@ -150,6 +176,7 @@ func (a *AuthzClient) CreateDocumentRelationships(ctx context.Context, documentI
 
 	slog.Info("spicedb relationships created",
 		"document", documentID,
+		"tenant", tenantID,
 		"owner", ownerUserID,
 		"viewer_teams", viewerTeams,
 	)
