@@ -20,8 +20,9 @@ def sample_chunks() -> list[TextChunk]:
 @pytest.fixture
 def sample_metadata() -> DocumentMetadata:
     return DocumentMetadata(
+        tenant_id="acme-corp",
         source_file="report.pdf",
-        file_path="documents/report.pdf",
+        file_path="documents/acme-corp/report.pdf",
         user_id="user_123",
         permissions=["engineering_team"],
         uploaded_at="2026-03-10T10:00:00Z",
@@ -104,22 +105,25 @@ class TestDocumentMetadata:
     """Test metadata construction."""
 
     def test_metadata_fields(self, sample_metadata):
+        assert sample_metadata.tenant_id == "acme-corp"
         assert sample_metadata.source_file == "report.pdf"
-        assert sample_metadata.file_path == "documents/report.pdf"
+        assert sample_metadata.file_path == "documents/acme-corp/report.pdf"
         assert sample_metadata.user_id == "user_123"
         assert sample_metadata.permissions == ["engineering_team"]
         assert sample_metadata.uploaded_at == "2026-03-10T10:00:00Z"
 
     def test_metadata_permissions_list(self):
         meta = DocumentMetadata(
+            tenant_id="contoso",
             source_file="doc.pdf",
-            file_path="documents/doc.pdf",
+            file_path="documents/contoso/doc.pdf",
             user_id="alice",
             permissions=["finance_team", "admin"],
             uploaded_at="2026-01-01T00:00:00Z",
         )
         assert len(meta.permissions) == 2
         assert "finance_team" in meta.permissions
+        assert meta.tenant_id == "contoso"
 
 
 class TestUpsertVectors:
@@ -149,10 +153,23 @@ class TestUpsertVectors:
 
         points = mock_qdrant.upsert.call_args.kwargs["points"]
         payload = points[0].payload
+        assert payload["tenant_id"] == "acme-corp"
         assert payload["source_file"] == "report.pdf"
         assert payload["permissions"] == ["engineering_team"]
         assert payload["uploaded_by"] == "user_123"
         assert payload["section_title"] == "Introduction"
+
+    def test_upsert_tenant_id_on_every_point(self, sample_chunks, sample_metadata, mock_config):
+        """tenant_id must appear on every vector — the gateway filter relies on it."""
+        mock_qdrant = MagicMock()
+        vectors = [[0.1] * 1536 for _ in sample_chunks]
+
+        upsert_vectors(
+            mock_qdrant, mock_config.qdrant_collection, sample_chunks, vectors, sample_metadata
+        )
+
+        points = mock_qdrant.upsert.call_args.kwargs["points"]
+        assert all(p.payload["tenant_id"] == "acme-corp" for p in points)
 
     def test_upsert_section_title_from_chunk_metadata(self, sample_chunks, sample_metadata, mock_config):
         mock_qdrant = MagicMock()

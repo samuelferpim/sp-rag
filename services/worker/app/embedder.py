@@ -24,10 +24,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DocumentMetadata:
-    """Metadata attached to every vector in Qdrant for a given document."""
+    """Metadata attached to every vector in Qdrant for a given document.
 
+    tenant_id is mandatory: the gateway enforces a Qdrant Must-filter on this key
+    for every query, guaranteeing absolute isolation between clients.
+    """
+
+    tenant_id: str            # owning tenant (e.g. "acme-corp")
     source_file: str          # original file name (e.g. "relatorio_2026.pdf")
-    file_path: str            # full MinIO path (e.g. "documents/relatorio_2026.pdf")
+    file_path: str            # full MinIO path (e.g. "documents/acme-corp/relatorio_2026.pdf")
     user_id: str              # uploader user ID
     permissions: list[str]    # permission tags (e.g. ["finance_team"])
     uploaded_at: str          # ISO-8601 timestamp from the Kafka event
@@ -67,9 +72,11 @@ def ensure_collection(
     collection_name: str,
     vector_size: int,
 ) -> None:
-    """Create the Qdrant collection if it does not already exist.
+    """Create the Qdrant collection (and its tenant payload index) if absent.
 
-    Uses Cosine distance, which is standard for sentence embeddings.
+    Uses Cosine distance, which is standard for sentence embeddings. Also creates
+    a keyword payload index on ``tenant_id`` so the mandatory tenant Must-filter
+    stays cheap as the collection grows.
 
     Args:
         qdrant:          Qdrant client.
@@ -77,24 +84,38 @@ def ensure_collection(
         vector_size:     Dimensionality of the embedding vectors.
     """
     existing = {c.name for c in qdrant.get_collections().collections}
-    if collection_name in existing:
+    if collection_name not in existing:
+        logger.info(
+            "Creating Qdrant collection",
+            extra={"collection": collection_name, "vector_size": vector_size},
+        )
+        qdrant.create_collection(
+            collection_name=collection_name,
+            vectors_config=qdrant_models.VectorParams(
+                size=vector_size,
+                distance=qdrant_models.Distance.COSINE,
+            ),
+        )
+        logger.info("Collection created", extra={"collection": collection_name})
+    else:
         logger.debug(
             "Collection already exists", extra={"collection": collection_name}
         )
-        return
 
-    logger.info(
-        "Creating Qdrant collection",
-        extra={"collection": collection_name, "vector_size": vector_size},
-    )
-    qdrant.create_collection(
-        collection_name=collection_name,
-        vectors_config=qdrant_models.VectorParams(
-            size=vector_size,
-            distance=qdrant_models.Distance.COSINE,
-        ),
-    )
-    logger.info("Collection created", extra={"collection": collection_name})
+    # Payload index on tenant_id — keeps the tenant Must-filter O(log n)
+    # instead of a full payload scan. Idempotent: Qdrant ignores duplicates.
+    try:
+        qdrant.create_payload_index(
+            collection_name=collection_name,
+            field_name="tenant_id",
+            field_schema=qdrant_models.PayloadSchemaType.KEYWORD,
+        )
+    except Exception as exc:  # noqa: BLE001 — Qdrant raises different types across versions
+        # Already-exists errors are expected; log others as warnings.
+        logger.debug(
+            "tenant_id payload index not created (may already exist)",
+            extra={"error": str(exc)},
+        )
 
 
 def embed_chunks(
@@ -179,22 +200,28 @@ def upsert_vectors(
                 f"{metadata.file_path}::{chunk.chunk_index}",
             )
         )
+        payload = {
+            "text": chunk.text,
+            "tenant_id": metadata.tenant_id,
+            "source_file": metadata.source_file,
+            "file_path": metadata.file_path,
+            "page": chunk.page,
+            "chunk_index": chunk.chunk_index,
+            "section_title": chunk.metadata.get("section_title", ""),
+            "permissions": metadata.permissions,
+            "uploaded_by": metadata.user_id,
+            "uploaded_at": metadata.uploaded_at,
+            "created_at": now,
+        }
+        # Legal-tech / GraphRAG seed metadata: articles, laws, decrees, CNPJs.
+        # Only attached when the chunk text actually matched an entity regex.
+        if entities := chunk.metadata.get("entities"):
+            payload["entities"] = entities
         points.append(
             qdrant_models.PointStruct(
                 id=point_id,
                 vector=vector,
-                payload={
-                    "text": chunk.text,
-                    "source_file": metadata.source_file,
-                    "file_path": metadata.file_path,
-                    "page": chunk.page,
-                    "chunk_index": chunk.chunk_index,
-                    "section_title": chunk.metadata.get("section_title", ""),
-                    "permissions": metadata.permissions,
-                    "uploaded_by": metadata.user_id,
-                    "uploaded_at": metadata.uploaded_at,
-                    "created_at": now,
-                },
+                payload=payload,
             )
         )
 

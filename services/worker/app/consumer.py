@@ -128,6 +128,7 @@ def _publish(producer: Producer, topic: str, payload: dict[str, Any]) -> None:
 def _publish_processed(
     producer: Producer,
     config: Config,
+    tenant_id: str,
     file_path: str,
     file_name: str,
     user_id: str,
@@ -137,6 +138,7 @@ def _publish_processed(
         producer,
         config.kafka_topic_processed,
         {
+            "tenant_id": tenant_id,
             "file_path": file_path,
             "file_name": file_name,
             "user_id": user_id,
@@ -149,6 +151,7 @@ def _publish_processed(
 def _publish_failed(
     producer: Producer,
     config: Config,
+    tenant_id: str,
     file_path: str,
     file_name: str,
     user_id: str,
@@ -158,6 +161,7 @@ def _publish_failed(
         producer,
         config.kafka_topic_failed,
         {
+            "tenant_id": tenant_id,
             "file_path": file_path,
             "file_name": file_name,
             "user_id": user_id,
@@ -175,7 +179,8 @@ def _parse_event(raw: bytes) -> dict[str, Any]:
 
     Expected schema:
     {
-        "file_path":   "documents/report.pdf",
+        "tenant_id":   "acme-corp",
+        "file_path":   "documents/acme-corp/report.pdf",
         "file_name":   "report.pdf",
         "user_id":     "user_123",
         "permissions": ["finance_team"],
@@ -196,10 +201,13 @@ def _parse_event(raw: bytes) -> dict[str, Any]:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"Invalid message encoding: {exc}") from exc
 
-    required = {"file_path", "file_name", "user_id", "permissions", "uploaded_at"}
+    required = {"tenant_id", "file_path", "file_name", "user_id", "permissions", "uploaded_at"}
     missing = required - event.keys()
     if missing:
         raise ValueError(f"Missing required fields: {missing}")
+
+    if not event["tenant_id"]:
+        raise ValueError("tenant_id must be a non-empty string")
 
     return event
 
@@ -226,10 +234,14 @@ def _process_event(
     Raises:
         Exception: Any error encountered during processing (caller handles).
     """
+    tenant_id: str = event["tenant_id"]
     file_path: str = event["file_path"]
     file_name: str = event["file_name"]
 
-    logger.info("Processing document", extra={"file_path": file_path})
+    logger.info(
+        "Processing document",
+        extra={"tenant_id": tenant_id, "file_path": file_path},
+    )
 
     # Download PDF from MinIO into a temporary file
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
@@ -245,6 +257,7 @@ def _process_event(
         raise ValueError(f"ETL produced zero chunks for {file_name}")
 
     metadata = DocumentMetadata(
+        tenant_id=tenant_id,
         source_file=file_name,
         file_path=file_path,
         user_id=event["user_id"],
@@ -294,12 +307,14 @@ def run(config: Config) -> None:
                     continue
                 raise KafkaException(msg.error())
 
+            tenant_id = "<unknown>"
             file_path = "<unknown>"
             file_name = "<unknown>"
             user_id = "<unknown>"
 
             try:
                 event = _parse_event(msg.value())
+                tenant_id = event["tenant_id"]
                 file_path = event["file_path"]
                 file_name = event["file_name"]
                 user_id = event["user_id"]
@@ -315,6 +330,7 @@ def run(config: Config) -> None:
                 _publish_processed(
                     producer=producer,
                     config=config,
+                    tenant_id=tenant_id,
                     file_path=file_path,
                     file_name=file_name,
                     user_id=user_id,
@@ -323,6 +339,7 @@ def run(config: Config) -> None:
                 logger.info(
                     "Document ingested successfully",
                     extra={
+                        "tenant_id": tenant_id,
                         "file_path": file_path,
                         "chunks": chunks_count,
                     },
@@ -331,11 +348,12 @@ def run(config: Config) -> None:
             except Exception as exc:
                 logger.exception(
                     "Failed to process document",
-                    extra={"file_path": file_path, "error": str(exc)},
+                    extra={"tenant_id": tenant_id, "file_path": file_path, "error": str(exc)},
                 )
                 _publish_failed(
                     producer=producer,
                     config=config,
+                    tenant_id=tenant_id,
                     file_path=file_path,
                     file_name=file_name,
                     user_id=user_id,

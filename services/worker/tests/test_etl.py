@@ -14,7 +14,13 @@ from unstructured.documents.elements import (
     Title,
 )
 
-from app.etl import TextChunk, chunk_elements, filter_elements, process_pdf
+from app.etl import (
+    TextChunk,
+    chunk_elements,
+    extract_entities,
+    filter_elements,
+    process_pdf,
+)
 
 
 class TestFilterElements:
@@ -249,6 +255,78 @@ class TestChunkElements:
         assert chunks[0].metadata["section_title"] == "Chapter 1"
         # Last chunk(s) belong to Chapter 2
         assert chunks[-1].metadata["section_title"] == "Chapter 2"
+
+
+class TestExtractEntities:
+    """Regex-based legal-tech entity extraction (articles, laws, decrees, CNPJs)."""
+
+    def test_extracts_articles(self):
+        text = "Conforme o Art. 150 da Constituição e o Artigo 5º, inciso II..."
+        entities = extract_entities(text)
+        assert "articles" in entities
+        # Both "150" and "5º" should be captured
+        assert any("150" in a for a in entities["articles"])
+        assert any("5" in a for a in entities["articles"])
+
+    def test_extracts_laws(self):
+        text = "A Lei nº 8.666/1993 rege as licitações públicas."
+        entities = extract_entities(text)
+        assert "laws" in entities
+        assert "8.666/1993" in entities["laws"][0]
+
+    def test_extracts_decrees(self):
+        text = "O Decreto nº 10.024/2019 regulamenta o pregão eletrônico."
+        entities = extract_entities(text)
+        assert "decrees" in entities
+        assert "10.024/2019" in entities["decrees"][0]
+
+    def test_extracts_cnpj(self):
+        text = "CNPJ da empresa: 12.345.678/0001-99."
+        entities = extract_entities(text)
+        assert entities.get("cnpjs") == ["12.345.678/0001-99"]
+
+    def test_no_entities_returns_empty_dict(self):
+        """Non-legal text produces an empty dict (keeps payload lean)."""
+        entities = extract_entities("The quick brown fox jumps over the lazy dog.")
+        assert entities == {}
+
+    def test_dedupes_duplicate_matches(self):
+        text = "Art. 5 e novamente Art. 5 e Art. 5°"
+        entities = extract_entities(text)
+        # All three references collapse to at most two distinct values.
+        assert len(entities["articles"]) <= 2
+
+
+class TestChunkMetadataEntities:
+    """Chunks carry extracted entities in metadata when the text matches a pattern."""
+
+    def _make_element(self, text: str, page: int = 1) -> MagicMock:
+        elem = MagicMock(spec=NarrativeText)
+        elem.text = text
+        elem.__str__ = lambda self: self.text
+        elem.metadata = MagicMock()
+        elem.metadata.page_number = page
+        return elem
+
+    def test_chunk_metadata_contains_entities_when_present(self):
+        elem = self._make_element(
+            "A Lei nº 8.666/1993 estabelece, conforme o Art. 150, as regras para licitação."
+        )
+        chunks = chunk_elements(
+            [elem], chunk_size=5000, overlap=100, min_chunk_length=10
+        )
+        assert len(chunks) == 1
+        entities = chunks[0].metadata.get("entities")
+        assert entities is not None, "legal text must produce an entities metadata key"
+        assert "laws" in entities
+        assert "articles" in entities
+
+    def test_chunk_metadata_has_no_entities_for_plain_text(self):
+        elem = self._make_element("Just some plain prose with no legal references.")
+        chunks = chunk_elements(
+            [elem], chunk_size=5000, overlap=100, min_chunk_length=10
+        )
+        assert "entities" not in chunks[0].metadata
 
 
 class TestProcessPdf:

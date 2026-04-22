@@ -12,6 +12,7 @@ Size limits use character count (not word count) for more predictable splits.
 """
 
 import logging
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +109,57 @@ def _get_page(element: Element) -> int:
         return 1
 
 
+# ── Legal-tech entity extraction ──────────────────────────────────────────
+#
+# Regex-level entity extraction is a GraphRAG primer, not the final word: it
+# gives us high-recall metadata tags (Artigo, Lei, Decreto, CPF/CNPJ…) that the
+# query layer can filter on today — and that a future KG builder can promote to
+# graph edges. Patterns are PT-BR-biased because the seed vertical is Brazilian
+# legal/tax publications (DOU, Receita Federal), but are safe on non-legal text
+# (just produce empty results).
+
+_ARTICLE_RE = re.compile(r"\bArt(?:igo)?\.?\s*(\d+[º°ªo]?(?:[.\-]\d+)*)", re.IGNORECASE)
+_LAW_RE = re.compile(r"\bLei(?:\s+Complementar|\s+Ordinária)?\s+n[º°o.]*\s*([\d.\-/]+)", re.IGNORECASE)
+_DECREE_RE = re.compile(r"\bDecreto(?:\s+Federal)?\s+n[º°o.]*\s*([\d.\-/]+)", re.IGNORECASE)
+_CNPJ_RE = re.compile(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b")
+
+
+def extract_entities(text: str) -> dict[str, list[str]]:
+    """Extract legal/juridical entities from a block of text.
+
+    Returned keys are only present when matches exist (keeps the Qdrant payload
+    small for non-legal tenants). Values are de-duplicated but preserve first-
+    occurrence order.
+
+    Args:
+        text: Raw chunk text.
+
+    Returns:
+        Dict with optional keys: ``articles``, ``laws``, ``decrees``, ``cnpjs``.
+    """
+
+    def _dedup(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            key = item.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(item.strip())
+        return out
+
+    entities: dict[str, list[str]] = {}
+    if arts := _dedup(_ARTICLE_RE.findall(text)):
+        entities["articles"] = arts
+    if laws := _dedup(_LAW_RE.findall(text)):
+        entities["laws"] = laws
+    if decrees := _dedup(_DECREE_RE.findall(text)):
+        entities["decrees"] = decrees
+    if cnpjs := _dedup(_CNPJ_RE.findall(text)):
+        entities["cnpjs"] = cnpjs
+    return entities
+
+
 def chunk_elements(
     elements: list[Element],
     chunk_size: int,
@@ -167,12 +219,16 @@ def chunk_elements(
         nonlocal chunk_idx
         chunk_text = "\n\n".join(acc_texts)
         if len(chunk_text) >= min_chunk_length:
+            metadata: dict = {"section_title": acc_section}
+            entities = extract_entities(chunk_text)
+            if entities:
+                metadata["entities"] = entities
             chunks.append(
                 TextChunk(
                     text=chunk_text,
                     page=acc_pages[0],
                     chunk_index=chunk_idx,
-                    metadata={"section_title": acc_section},
+                    metadata=metadata,
                 )
             )
             chunk_idx += 1
