@@ -61,45 +61,98 @@ func TestPermissionHash(t *testing.T) {
 
 func TestExactKey(t *testing.T) {
 	t.Run("same inputs same key", func(t *testing.T) {
-		k1 := exactKey("what is rag?", []string{"finance_team"})
-		k2 := exactKey("what is rag?", []string{"finance_team"})
+		k1 := exactKey("acme", "what is rag?", []string{"finance_team"})
+		k2 := exactKey("acme", "what is rag?", []string{"finance_team"})
 		assert.Equal(t, k1, k2)
 	})
 
 	t.Run("different permissions different key", func(t *testing.T) {
-		k1 := exactKey("what is rag?", []string{"finance_team"})
-		k2 := exactKey("what is rag?", []string{"eng_team"})
+		k1 := exactKey("acme", "what is rag?", []string{"finance_team"})
+		k2 := exactKey("acme", "what is rag?", []string{"eng_team"})
 		assert.NotEqual(t, k1, k2, "different permissions must produce different cache keys")
 	})
 
 	t.Run("normalized query same key", func(t *testing.T) {
-		k1 := exactKey("What is RAG?", []string{"admin"})
-		k2 := exactKey("what is rag", []string{"admin"})
+		k1 := exactKey("acme", "What is RAG?", []string{"admin"})
+		k2 := exactKey("acme", "what is rag", []string{"admin"})
 		assert.Equal(t, k1, k2, "normalization should make these equivalent")
 	})
 
 	t.Run("has prefix", func(t *testing.T) {
-		k := exactKey("test", []string{})
+		k := exactKey("acme", "test", []string{})
 		assert.Contains(t, k, exactPrefix)
 	})
 
-	t.Run("is sha256 hex", func(t *testing.T) {
-		k := exactKey("test", []string{"a"})
-		hash := k[len(exactPrefix):]
-		assert.Len(t, hash, 64, "SHA-256 hex should be 64 chars")
+	t.Run("tenant segment in key", func(t *testing.T) {
+		k := exactKey("acme", "test", []string{})
+		assert.Contains(t, k, exactPrefix+"acme:", "tenant must appear in key namespace")
 	})
 }
 
+func TestTenantIsolation(t *testing.T) {
+	// Core multi-tenant security test: the SAME query with the SAME permissions
+	// MUST produce different keys across tenants. Without this, tenant A could
+	// read tenant B's cached responses.
+	query := "what are the financial results?"
+	perms := []string{"finance_team"}
+
+	acme := exactKey("acme", query, perms)
+	contoso := exactKey("contoso", query, perms)
+	initech := exactKey("initech", query, perms)
+
+	assert.NotEqual(t, acme, contoso, "tenants acme and contoso must not share cache keys")
+	assert.NotEqual(t, acme, initech, "tenants acme and initech must not share cache keys")
+	assert.NotEqual(t, contoso, initech, "tenants contoso and initech must not share cache keys")
+}
+
 func TestPermissionIsolation(t *testing.T) {
-	// Core security test: same query with different permissions MUST produce different keys.
+	// Within a single tenant: same query with different permissions MUST produce different keys.
 	// Without this, user A could see cached results from user B.
 	query := "what are the financial results?"
 
-	aliceKey := exactKey(query, []string{"finance_team", "hr_team"})
-	bobKey := exactKey(query, []string{"eng_team"})
-	charlieKey := exactKey(query, []string{"eng_team", "finance_team"})
+	aliceKey := exactKey("acme", query, []string{"finance_team", "hr_team"})
+	bobKey := exactKey("acme", query, []string{"eng_team"})
+	charlieKey := exactKey("acme", query, []string{"eng_team", "finance_team"})
 
 	assert.NotEqual(t, aliceKey, bobKey, "alice and bob have different permissions")
 	assert.NotEqual(t, aliceKey, charlieKey, "alice and charlie have different permissions")
 	assert.NotEqual(t, bobKey, charlieKey, "bob and charlie have different permissions")
+}
+
+func TestScopeTag(t *testing.T) {
+	t.Run("deterministic", func(t *testing.T) {
+		a := scopeTag("acme", []string{"finance_team"})
+		b := scopeTag("acme", []string{"finance_team"})
+		assert.Equal(t, a, b)
+	})
+
+	t.Run("differs across tenants", func(t *testing.T) {
+		a := scopeTag("acme", []string{"finance_team"})
+		b := scopeTag("contoso", []string{"finance_team"})
+		assert.NotEqual(t, a, b, "scope tag must isolate tenants in the semantic index")
+	})
+
+	t.Run("differs across permission sets", func(t *testing.T) {
+		a := scopeTag("acme", []string{"finance_team"})
+		b := scopeTag("acme", []string{"eng_team"})
+		assert.NotEqual(t, a, b)
+	})
+}
+
+func TestSanitizeTenant(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"acme", "acme"},
+		{"Acme-42_x", "Acme-42_x"},
+		{"acme corp", "acme_corp"},
+		{"a.b/c", "a_b_c"},
+		{"", "_"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			assert.Equal(t, tt.want, sanitizeTenant(tt.in))
+		})
+	}
 }

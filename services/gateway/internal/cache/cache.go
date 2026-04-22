@@ -9,15 +9,18 @@ import (
 )
 
 // Cache defines the interface for query caching.
-// All lookups are permission-aware to prevent data leakage across scopes.
+// All lookups are tenant- AND permission-aware to prevent any cross-tenant leak
+// and cross-user-scope leaks within the same tenant.
 type Cache interface {
-	// Exact cache: SHA-256 of (normalized query + permission hash)
-	GetExact(ctx context.Context, query string, permissions []string) ([]byte, error)
-	SetExact(ctx context.Context, query string, permissions []string, data []byte) error
+	// Exact cache: SHA-256 of (normalized query + permission hash), keyspace
+	// partitioned by tenantID.
+	GetExact(ctx context.Context, tenantID, query string, permissions []string) ([]byte, error)
+	SetExact(ctx context.Context, tenantID, query string, permissions []string, data []byte) error
 
-	// Semantic cache: vector similarity search filtered by permission hash
-	GetSemantic(ctx context.Context, queryVector []float32, permissions []string) ([]byte, float64, error)
-	SetSemantic(ctx context.Context, queryVector []float32, permissions []string, data []byte) error
+	// Semantic cache: vector similarity search filtered by a tag that combines
+	// tenantID + permission hash, so vectors are never matched across tenants.
+	GetSemantic(ctx context.Context, tenantID string, queryVector []float32, permissions []string) ([]byte, float64, error)
+	SetSemantic(ctx context.Context, tenantID string, queryVector []float32, permissions []string, data []byte) error
 
 	// EnsureIndex creates the RediSearch vector index if it doesn't exist.
 	EnsureIndex(ctx context.Context) error
@@ -34,9 +37,9 @@ type RedisCache struct {
 // NewRedisCache creates a RedisCache connected to the given Redis instance.
 func NewRedisCache(addr, password string, db int, ttl time.Duration, threshold float64, dims int) (*RedisCache, error) {
 	client := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		Password:     password,
-		DB:           db,
+		Addr:          addr,
+		Password:      password,
+		DB:            db,
 		UnstableResp3: true,
 	})
 

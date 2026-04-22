@@ -57,15 +57,15 @@ func (rc *RedisCache) EnsureIndex(ctx context.Context) error {
 	return nil
 }
 
-// GetSemantic searches the semantic cache for a similar query vector with matching permissions.
+// GetSemantic searches the semantic cache for a similar query vector matching (tenant, permissions).
 // Returns (data, similarity, error). data is nil on cache miss or below-threshold match.
-func (rc *RedisCache) GetSemantic(ctx context.Context, queryVector []float32, permissions []string) ([]byte, float64, error) {
-	permHash := permissionHash(permissions)
+func (rc *RedisCache) GetSemantic(ctx context.Context, tenantID string, queryVector []float32, permissions []string) ([]byte, float64, error) {
+	scope := scopeTag(tenantID, permissions)
 	vecBytes := vectorToBytes(queryVector)
 
-	// KNN search filtered by permission hash
-	// RediSearch COSINE distance: 0 = identical, 2 = opposite
-	query := fmt.Sprintf("(@perm:{%s})=>[KNN 1 @vec $vec AS dist]", permHash)
+	// KNN search filtered by the tenant+permission scope tag.
+	// RediSearch COSINE distance: 0 = identical, 2 = opposite.
+	query := fmt.Sprintf("(@perm:{%s})=>[KNN 1 @vec $vec AS dist]", scope)
 
 	// Use raw FT.SEARCH to avoid go-redis RESP3 parsing issues with FTSearchWithArgs
 	rawResult, err := rc.client.Do(ctx,
@@ -167,17 +167,17 @@ func toInt64(v interface{}) (int64, bool) {
 	return 0, false
 }
 
-// SetSemantic stores a response in the semantic cache with its query vector and permission hash.
-func (rc *RedisCache) SetSemantic(ctx context.Context, queryVector []float32, permissions []string, data []byte) error {
-	permHash := permissionHash(permissions)
+// SetSemantic stores a response in the semantic cache tagged by (tenant, permissions).
+func (rc *RedisCache) SetSemantic(ctx context.Context, tenantID string, queryVector []float32, permissions []string, data []byte) error {
+	scope := scopeTag(tenantID, permissions)
 	vecBytes := vectorToBytes(queryVector)
-	key := semanticPrefix + uuid.New().String()
+	key := semanticPrefix + sanitizeTenant(tenantID) + ":" + uuid.New().String()
 
 	pipe := rc.client.Pipeline()
 
 	pipe.HSet(ctx, key, map[string]any{
 		"vec":  string(vecBytes),
-		"perm": permHash,
+		"perm": scope,
 		"data": string(data),
 	})
 	pipe.Expire(ctx, key, rc.ttl)
